@@ -1,0 +1,44 @@
+# Superpowers brainstorm artifacts
+.superpowers/
+
+# Credentials & secrets
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+*_secret*
+*_token*
+settings.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+build/
+
+# Build artifacts
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database local
+*.sqlite
+*.db
