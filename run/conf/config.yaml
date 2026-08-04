@@ -1,0 +1,13 @@
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  temperature: 0.3
+  max_tokens: 2000
+  retry_max: 3
+
+db:
+  url: sqlite:///data/db/app.db
+
+upload:
+  max_size_mb: 10
+  allowed_extensions: [".json", ".txt"]
