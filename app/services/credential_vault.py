@@ -10,12 +10,14 @@ via isinstance checks (mirrors the LLMProvider pattern from T11).
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 import keyring
 from keyring.errors import KeyringError
 
 __all__ = ["CredentialVault", "InMemoryVault", "OSKeyringVault"]
+
+_DEFAULT_SERVICE: Final[str] = "group-chat-digest"
 
 
 @runtime_checkable
@@ -36,8 +38,9 @@ class CredentialVault(Protocol):
 class InMemoryVault:
     """Ephemeral in-process credential store.
 
-    Secrets live only for the lifetime of the process; intended for tests
-    and local development where OS keyring access is unavailable or undesired.
+    WARNING: NOT for production. Secrets reside as plaintext in process
+    memory and may be exposed via core dumps, swap, or debugger attachment.
+    Use `OSKeyringVault` for any deployment.
     """
 
     def __init__(self) -> None:
@@ -59,11 +62,15 @@ class InMemoryVault:
 class OSKeyringVault:
     """Credential vault backed by the OS keyring service.
 
-    Delegates to the `keyring` library; service name is configurable to
-    allow multiple deployments on the same host without collision.
+    Production-recommended backend. Delegates to the `keyring` library;
+    service name is configurable to allow multiple deployments on the same
+    host without collision.
+
+    `load()` returns a plaintext `str`; callers must clear references
+    promptly and avoid logging the returned value.
     """
 
-    def __init__(self, service: str = "group-chat-digest") -> None:
+    def __init__(self, service: str = _DEFAULT_SERVICE) -> None:
         self.service = service
 
     def store(self, key_name: str, value: str) -> None:
@@ -73,6 +80,8 @@ class OSKeyringVault:
         return keyring.get_password(self.service, key_name)
 
     def status(self, key_name: str) -> dict[str, bool]:
+        # Performs a get_password fetch solely to check presence; do not
+        # call on hot paths — it materializes the secret into Python memory.
         return {
             "configured": keyring.get_password(self.service, key_name) is not None
         }

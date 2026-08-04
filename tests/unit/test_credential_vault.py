@@ -69,3 +69,14 @@ def test_credential_vault_isinstance_runtime_checkable():
     """Protocol should be runtime-checkable for T19 router isinstance checks."""
     assert isinstance(InMemoryVault(), CredentialVault)
     assert isinstance(OSKeyringVault(service="x"), CredentialVault)
+
+
+def test_os_keyring_load_missing(monkeypatch):
+    """load() on a non-existent key must return None (not raise)."""
+    class FakeKeyring:
+        def set_password(self, s, u, p): raise AssertionError("should not be called")
+        def get_password(self, s, u): return None
+        def delete_password(self, s, u): raise AssertionError("should not be called")
+
+    monkeypatch.setattr("app.services.credential_vault.keyring", FakeKeyring())
+    assert OSKeyringVault(service="x").load("absent") is None
