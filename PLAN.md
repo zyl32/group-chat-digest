@@ -221,9 +221,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-
-[tool.uv]
-dev-dependencies = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-asyncio>=0.23", "respx>=0.21"]
 ```
 
 `app/__init__.py`: (空)
