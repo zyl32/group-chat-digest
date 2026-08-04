@@ -1,13 +1,15 @@
+from typing import Iterator
+
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.main import app
 from app.models.db import Base, get_engine
 
 
 @pytest.fixture
-def in_memory_db():
+def in_memory_db() -> Iterator[Session]:
     """Create an isolated in-memory SQLite database for a single test.
 
     Yields a SQLAlchemy Session bound to a fresh in-memory schema. The engine
@@ -22,7 +24,7 @@ def in_memory_db():
 
 
 @pytest.fixture
-def client():
+def client() -> Iterator[TestClient]:
     """Yield a FastAPI TestClient.
 
     NOTE: T14 (Upload Router) will extend this with `app.dependency_overrides`

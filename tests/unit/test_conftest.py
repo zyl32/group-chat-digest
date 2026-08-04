@@ -15,3 +15,9 @@ def test_in_memory_db_fixture(in_memory_db):
     in_memory_db.add(u)
     in_memory_db.commit()
     assert in_memory_db.query(Upload).count() == 1
+
+
+def test_client_healthz(client):
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
