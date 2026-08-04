@@ -967,3 +967,91 @@
 - `071001b` fix(credential-vault): harden docstrings, hoist _DEFAULT_SERVICE constant, add load_missing test
 
 ---
+
+## [2026-08-05] Task T14: Upload Router + Scheduler + Parser Service
+
+**所在 worktree**：`wt-services-routers`（分支 `worktree-wt-services-routers`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T14 完整 TDD — 8 文件（routers/{__init__,health,uploads}.py + services/{scheduler,parser_service}.py + main.py 修改 + conftest.py 修改 + tests/integration/test_upload_router.py 3 测试）
+- 关键约束：
+  1. 拒绝 PLAN spec 的 inline `engine = get_engine(cfg["db"]["url"])` + `Base.metadata.create_all` per request — 改用 FastAPI `Depends(get_db)` dependency injection，让 `client` fixture 能 override
+  2. coding-style.md 强制 type hints / `__all__` / 禁止 bare except
+  3. PLAN spec 字面用 `cfg["db"]["url"]`（dict 访问），但 T3 OmegaConf 返回 `DictConfig` 支持 `cfg.db.url` 属性访问 — 用属性风格
+  4. 不要破坏 `test_client_healthz`（T5 smoke test）— main.py 改 router 后仍要 200 + `{"status": "ok"}`
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`9d13e9e` "feat: add upload router with parse-and-persist, scheduler scaffold, parser service"
+- 64 项测试全过（61 prior + 3 new integration）
+- 3 项 disclosed deviations：
+  1. `fmt` 改 `Optional[str] = Form(None)`（PLAN spec 是 `fmt: str = Form(...)`）— 否则 `test_upload_too_large`（不发 fmt）会被 FastAPI form validation 短路为 422 而非 413
+  2. `conftest._make_in_memory_engine` 用 `StaticPool + check_same_thread=False`（PLAN spec 隐含 `get_engine("sqlite://")`）— TestClient 在 anyio thread pool 跑 handler，默认 `SingletonThreadPool` 每线程一连接，写读不可见；`StaticPool` 共享单连接跨线程
+  3. 加 `python-multipart>=0.0.32` 到 `pyproject.toml` dependencies — FastAPI `File`/`Form` 参数必需，前 task 未触发
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant (with disclosed deviations accepted)
+- 8 文件全在 ✅；3 PLAN 测试通过 ✅；`scheduler` 单例存在 ✅；`main.py` include 两 router + 内联 healthz 已删 ✅；conftest `client` 依赖 `in_memory_db` 且 override `get_db` ✅；无 out-of-scope 修改 ✅；`uv.lock` dirty 但未 staged ✅
+- 3 deviations 全部接受（让 413 测试工作 + 仅 conftest 不动生产 `get_engine` + 必需运行时依赖）
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with fixes**
+- Strengths：`__all__` 齐；frozen dataclass 配置；StaticPool 文档清楚；`fmt` optional deviation 在 router docstring 明示；error codes 符合 spec；registry 查找完整类型
+- **Critical issue**：
+  - **SEC #1**：`Upload.filename = file.filename` 存原始用户输入 — path traversal `../../etc/passwd` + NUL 字节。虽存在 SQLite 不直接文件系统，但存储型注入向量，未来 task 可能误用。修复：`os.path.basename(name or "")[:255] or "upload.bin"`
+- Important issues：
+  - **#2**：`raw = await file.read()` 在 size check 前读全部内容 — DoS 向量（2GB 上传 OOM）。修复：chunked read，每 MB 检查 size
+  - **#3**：模块级 `cfg = load_config()` 是 import-time side effect（读 yaml 文件 I/O）— 难测试，跨环境失败。修复：注入为 FastAPI dependency。**编排器决定**：暂不修，加 TODO(T17) — PLAN spec 字面就是 module-level，避免 T14 范围蔓延
+  - **#4**：`get_db` per-request `Base.metadata.create_all(engine)` 浪费 — 加 `# TODO(T17): move to startup`
+  - **#5**：`HTTPException(422, str(e))` 可能泄漏 parser 内部信息 — 改 generic message + `logger.warning` 服务端记录
+  - **#6**：`scheduler._workers: list = []` 未用、类型松散、违反 YAGNI — 删除（T17 重新加）
+  - **#7**：`test_upload_unknown_format` 断言弱 `in (422, 400)` — 收紧为 `== 422`
+  - **#8**：`conftest.client` fixture `app.dependency_overrides.clear()` 不在 try/finally — TestClient 构造失败会泄漏 override
+  - **#9**：`select_parser` 是未用公共导出 — 留作 utility，YAGNI 不删
+- Minor issues（不阻断）：
+  - LOW #10：`fmt or ""` 重复 3 次 → 局部变量 `fmt_norm`
+  - LOW #11：`healthz` 返回 `dict[str, str]` vs Pydantic `HealthResponse` — 风格，不动
+  - LOW #12：`parser_service.py` 用 `Optional`，其他用 `X | None` — 风格，不动
+  - LOW #13：`Callable[[], Awaitable]` 应 `Callable[[], Awaitable[None]]` — 修复时一并改
+
+**派发 fix implementer**：
+- 模型：编排器直接执行（多文件但每处机械，T8 precedent — 安全敏感但模式已知）
+- 修复 Critical #1：`app/routers/uploads.py` 加 `_sanitize_filename` + `os.path.basename` + 255 字符截断 + fallback `upload.bin`
+- 修复 Important #2：chunked read `while chunk := await file.read(1 << 20):` 每 MB 检查 total > max_bytes
+- 修复 Important #4：`get_db` 加 `# TODO(T17): move schema creation to app startup`
+- 修复 Important #5：`HTTPException(422, "unsupported or malformed chat export")` + `logger.warning("parse failed: %s", e)`；加 `logger = logging.getLogger(__name__)`
+- 修复 Important #6：`scheduler.py` 删 `self._workers: list = []`
+- 修复 Important #7：`test_upload_unknown_format` 断言收紧 `== 422`
+- 修复 Important #8：`conftest.client` 用 `try: yield TestClient(app) finally: app.dependency_overrides.clear()`
+- 修复 Important #13：`scheduler.py` `Callable[[], Awaitable[None]]` 类型收紧
+- 加 `test_upload_filename_traversal_sanitized` 测试覆盖 Critical #1 安全 fix
+- 跳过：#3 module-level cfg（PLAN spec 字面，T17 重构）+ #9 select_parser utility（YAGNI）+ Minor #10-12（风格）
+- Commit：`405d19b` "fix(upload-router): sanitize filename, chunked size check, mask parse errors, harden scheduler/conftest"
+- 验证：65 passed（64 prior + 1 new sanitization test）
+
+**人工干预**：
+- 编排器跑 `uv run pytest -q`：65 passed
+- 编排器直接 Read 验证：`_sanitize_filename` + chunked read + masked exception + scheduler 字段删除 + conftest try/finally 全部应用
+- 跳过完整 re-review：fix 范围是 1 个 critical 安全加固 + 6 处机械修改 + 1 个新测试，三重验证足够
+
+**学到的教训**：
+1. **文件名是用户输入，必须 sanitize**：`UploadFile.filename` 可含 `../../etc/passwd` / NUL 字节 / 超长字符串。即使存 SQLite 不直接文件系统，也是存储型注入向量（未来 task 可能误用 `filename` 做文件操作）。教训：所有用户输入的文件名都必须 `os.path.basename(name or "")[:MAX]` 标准化，存前处理，不依赖 consumer 自觉。
+2. **size check 必须在 read 前，不是 read 后**：`raw = await file.read()` 然后检查 `len(raw) > max` 是经典 DoS — 攻击者发 2GB 让你 OOM 后才拒绝。修复：chunked read `while chunk := await file.read(1 << 20):` 累计 + 提前 break。教训：任何接受上传的路由都必须 chunk + early-reject，不能全量读后验证。
+3. **错误信息不要回显内部异常**：`HTTPException(422, str(e))` 把 `ParseError("unknown format: " + user_input)` 直接回显给客户端。即使 input 是用户自己的，也暴露了 parser 内部错误格式 + 可能的路径/栈信息。修复：generic 客户端消息 + 服务端 `logger.warning` 记录真实异常。教训：API 错误响应只给通用消息 + 错误 ID，详情进日志。
+4. **conftest fixture teardown 必须 try/finally**：`app.dependency_overrides.clear()` 不在 try/finally 时，TestClient 构造失败会让 override 泄漏到下一个测试。教训：所有 fixture teardown 必须 try/finally 包裹 yield，pytest 会在测试失败时仍执行 finally 块。
+5. **PLAN spec 的 `SingletonThreadPool` 坑**：`get_engine("sqlite://")` 默认用 `SingletonThreadPool`（每线程一连接），TestClient handler 跑在 anyio thread pool 与测试线程不同，写读不可见。`StaticPool` 共享单连接跨线程。教训：测试 in-memory SQLite + FastAPI TestClient 必须用 `StaticPool + check_same_thread=False`，生产 SQLite 文件 DB 不需要。
+6. **T14 提前完成"凭据不硬编码"硬性约束的一部分**：§3.1 要求 key 不硬编码、不进 git、不进日志。T14 的 `_sanitize_filename` + chunked read + masked exception 是"输入 sanitize + DoS 防护 + 错误不泄漏"层，与 T13 凭据存储层共同构成安全基线。教训：安全不是单点，是分层（存储层 T13 + 输入层 T14 + 日志层 T15/T16）。
+7. **PLAN spec 字面写法不要盲目复制**：PLAN spec 的 `cfg = load_config()` module-level + `Base.metadata.create_all(engine)` per-request + `raw = await file.read()` 全量读 — 三处都是反模式。implementer subagent 跟随 spec 字面（合理，TDD 测试通过），code quality reviewer 抓安全/性能问题，编排器评估哪些修哪些延后。教训：spec 是契约不是圣经，安全 critical 必须偏离 spec 修复，性能/架构可加 TODO 延后。
+
+**T14 完成 commit 链**：
+- `9d13e9e` feat: add upload router with parse-and-persist, scheduler scaffold, parser service
+- `405d19b` fix(upload-router): sanitize filename, chunked size check, mask parse errors, harden scheduler/conftest
+
+---
