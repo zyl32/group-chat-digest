@@ -41,3 +41,18 @@ def test_mock_satisfies_llmprovider_protocol():
     """Structural typing: MockLLMAdapter has complete() and name() matching LLMProvider."""
     llm = MockLLMAdapter()
     assert isinstance(llm, LLMProvider)  # runtime_checkable Protocol
+
+
+def test_no_matching_response_returns_empty():
+    """When no set_response substring matches, complete returns empty string."""
+    llm = MockLLMAdapter()
+    assert llm.complete([{"role": "user", "content": "anything"}]) == ""
+
+
+def test_fail_zero_times_is_noop():
+    """fail_n_times(0, ...) is a no-op — no failures injected."""
+    llm = MockLLMAdapter()
+    llm.fail_n_times(0, RuntimeError("never"))
+    llm.set_response("x", "y")
+    assert llm.complete([{"role": "user", "content": "x"}]) == "y"
+    assert llm.call_count == 1

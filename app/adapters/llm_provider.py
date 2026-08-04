@@ -26,14 +26,14 @@ class LLMProvider(Protocol):
     def name(self) -> str: ...
 
 
-_LLM_PROVIDERS: dict[str, type] = {}
-LLM_PROVIDERS: Final[Mapping[str, type]] = MappingProxyType(_LLM_PROVIDERS)
+_LLM_PROVIDERS: dict[str, type[LLMProvider]] = {}
+LLM_PROVIDERS: Final[Mapping[str, type[LLMProvider]]] = MappingProxyType(_LLM_PROVIDERS)
 
 
 def register_provider(name: str):
     """Class decorator: register an LLMProvider implementor under `name`."""
 
-    def decorator(cls: type) -> type:
+    def decorator(cls: type[LLMProvider]) -> type[LLMProvider]:
         _LLM_PROVIDERS[name] = cls
         return cls
 
