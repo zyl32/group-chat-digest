@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.adapters.llm.mock import MockLLMAdapter
 from app.main import app
 from app.models.db import Base, get_engine
 
@@ -32,3 +33,14 @@ def client() -> Iterator[TestClient]:
     healthz route has no DB dependency, so scaffolding-only.
     """
     yield TestClient(app)
+
+
+@pytest.fixture
+def mock_llm() -> Iterator[MockLLMAdapter]:
+    """Yield a fresh MockLLMAdapter for testing LLM-dependent services.
+
+    Tests can pre-program responses via `set_response` or inject failures
+    via `fail_n_times` to exercise retry/fallback paths in DigestService
+    (T15) and TodoExtractor (T16).
+    """
+    yield MockLLMAdapter()
