@@ -811,3 +811,81 @@
 - `a17a996` fix(llm): drop redundant init import, tighten registry types to type[LLMProvider], add edge case tests
 
 ---
+
+## [2026-08-05] Task T12: DeepSeek & OpenAI LLM Adapters with Retry
+
+**所在 worktree**：`wt-parsers-llm`（分支 `worktree-wt-parsers-llm`）— 本 worktree 最后一个 task
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T12 完整 TDD — `DeepSeekAdapter` + `OpenAIAdapter`，OpenAI SDK 兼容，5xx/网络错误 retry，4xx 立即 raise；6 个测试（4 DeepSeek + 2 OpenAI）用 respx 模拟
+- 关键约束：与 T11 MockLLMAdapter retry 语义一致；OpenAI SDK `max_retries=0` 禁用内置 retry；`APIStatusError` 与 `APIError` 分别处理
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`b0ea224` "feat: add DeepSeek and OpenAI LLM adapters with retry"
+- 6 项测试全过（53 prior + 6 new = 59 项中的 6 项 adapter 测试）
+- 3 项 disclosed deviations（spec reviewer 全部接受）：
+  1. `base_url="https://api.deepseek.com/v1"` — PLAN spec 字面是 `https://api.deepseek.com`，但 respx mock URL 是 `.../v1/chat/completions`。OpenAI SDK 在 `base_url` 后追加 `/chat/completions`，必须显式 `/v1`。TDD 真相源：测试 URL 必须与生产 base_url 一致。
+  2. `max_retries=0` 传给 `OpenAI()` 构造函数 — 禁用 SDK 内置 retry，否则与自定义 `retry_max=3` 循环堆叠，产生 `route.call_count == 9`（实测过）。让自定义循环成为唯一 retry 来源。
+  3. 4xx 不重试加固 — PLAN spec 字面用裸 `except Exception`，会重试 `KeyboardInterrupt` 与 4xx 客户端错误（不会恢复）。改用 `except APIStatusError`（400-499 立即 raise，500+ retry）+ `except APIError`（retry）。严格优于 spec。
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant (with disclosed deviations accepted)
+- 5 个文件全在；两个 adapter 注册在 spec 硬性名 `deepseek`/`openai` 下；`complete()` 签名 + `response_format` 条件行为匹配；`content or ""` null fallback 已实现；6 个测试通过；3 个 deviation 防御性优于 spec，且都有测试覆盖
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with fixes**
+- Strengths：测试覆盖每个 deviation；`APIStatusError`/`APIError` 分类正确；`__all__` 齐；Registry pattern 跟随；文件 < 60 行；`max_retries=0` 防止 retry 堆叠
+- Important issues：
+  - **DRY #1**：`deepseek.py:31-52` 与 `openai_adapter.py:29-48` 的 `complete()` body 字节级重复——唯一差异是构造函数 `base_url`。改一处要改两处，是 DRY violation
+  - **Test gap #2**：`test_openai_adapter.py` 只有 2 个测试（ok + 4xx），缺 OpenAI 5xx retry 路径验证；retry 逻辑被复制，OpenAI 侧回归不会被捕获
+- Minor issues：
+  - LOW #3：`assert last_exc is not None` 在 `python -O` 下被移除，应改 `RuntimeError` guard
+  - LOW #4：`retry_max=3` + `2 ** attempt` 是 magic number（但已是 `__init__` 默认参数，可覆盖，YAGNI 不动）
+  - LOW #5：`test_deepseek_retry_on_5xx` 用裸 `except Exception: pass` 吞异常，应改 `pytest.raises(APIError)`
+  - LOW #6：缺 frozen dataclass config（T3 已有 `LLMConfig`，adapter 局部 YAGNI）
+
+**派发 fix implementer**：
+- 模型：sonnet（涉及基类提取，需判断）
+- 修复 1：新建 `app/adapters/llm/_openai_base.py`，提取 `_OpenAICompatAdapter` 基类，含 `complete()` retry 循环、`name()`、异常分类。`deepseek.py` 与 `openai_adapter.py` 各缩减到 ~22 行（仅 `__init__` 设 `_client/_model/_retry_max/_provider_name`）
+- 修复 2：`tests/unit/test_openai_adapter.py` 加 `test_openai_retry_on_5xx`，断言 `route.call_count == 3` + `pytest.raises(APIError)`
+- 修复 3：基类 `complete()` 末尾 `assert last_exc is not None` → `if last_exc is None: raise RuntimeError("retry loop exhausted without exception")`
+- 修复 4：`test_deepseek_retry_on_5xx` 裸 except → `with pytest.raises(APIError):`
+- 跳过：magic number（YAGNI，可被 `__init__` 覆盖）、frozen dataclass（T3 `LLMConfig` 已存在）
+- Commit：`16edaf7` "fix(llm): extract OpenAI-compat base, add OpenAI 5xx retry test, harden retry-exhausted guard"
+- 验证：54 passed（53 prior + 1 new OpenAI 5xx test）
+
+**人工干预**：
+- 编排器跑 `uv run pytest tests/unit/test_deepseek_adapter.py tests/unit/test_openai_adapter.py -v`：7 passed
+- 编排器读 `_openai_base.py` + `deepseek.py` 验证：基类结构干净（45 行），`complete()` 单一实现；`deepseek.py` 22 行只配置 provider name + base_url
+- 跳过完整 re-review：fix 范围是 DRY 提取（机械重构）+ 1 个测试添加 + 2 处小加固，implementer 自报 + 编排器跑测试 + 直接读 diff 三重验证足够
+
+**学到的教训**：
+1. **OpenAI SDK 的 `base_url` 拼接规则**：SDK 在 `base_url` 后追加 `/chat/completions`（不是替换）。DeepSeek 文档示例 `https://api.deepseek.com` 实际意思是"API 根"，但 OpenAI SDK 调用需要 `https://api.deepseek.com/v1`。教训：跨 provider 兼容时，base_url 必须含 `/v1` 版本前缀，否则 SDK 拼出 `https://api.deepseek.com/chat/completions`（404）。respx mock URL 是真相源——TDD 测试会暴露实际拼接结果。
+2. **SDK 内置 retry 会与自定义循环堆叠**：OpenAI SDK 默认 `max_retries=2`，自定义循环 `retry_max=3`，每次 SDK 内部重试 2 次 → 总 `call_count = 3 * 3 = 9`。修复：构造函数传 `max_retries=0`，让自定义循环成为唯一 retry 来源。教训：包装第三方 SDK 时，必须先禁用其内置 retry/timeout 行为，否则 retry 责任不清，测试断言也会失真。
+3. **DRY 提取的时机**：当两个 adapter 仅 `base_url` 不同时，提取基类的 ROI 极高——`complete()` 40+ 行重复 → 0 行重复，且未来加 jitter / 切 tenacity 只改一处。教训：在 LLM adapter 这类"协议兼容 + 配置差异"场景，基类提取应在第二个 concrete adapter 落地时立刻做，不要等到第三个。
+4. **`assert` 不能用于控制流**：`assert last_exc is not None` 在 `python -O` 下被移除，若 invariant 真被破坏，`raise last_exc` 会抛 `TypeError: exceptions must derive from BaseException`。教训：`assert` 仅用于"自检 + 调试"，生产代码控制流必须用 `if ...: raise RuntimeError(...)`。
+5. **测试用 `pytest.raises` 而非裸 except**：`try: f(); except Exception: pass` 只断言"抛了什么"，`with pytest.raises(APIError):` 断言"抛了特定类型"。教训：测试异常时永远用 `pytest.raises(SpecificError, match=...)`，裸 except 会让"抛错类型"的回归悄悄通过。
+6. **wt-parsers-llm 全程总结**：T6→T12 七个 task 在同一 worktree 内完成，分支 `worktree-wt-parsers-llm` 共 21+ commit。所有改动隔离干净，main 分支未污染。下一步用 `superpowers:finishing-a-development-branch` 合并到 main，然后开 `wt-services-routers` worktree 做 T13-T19（含之前漏的 T13 凭据保险库）。
+
+**T12 完成 commit 链**：
+- `b0ea224` feat: add DeepSeek and OpenAI LLM adapters with retry
+- `16edaf7` fix(llm): extract OpenAI-compat base, add OpenAI 5xx retry test, harden retry-exhausted guard
+
+**wt-parsers-llm 全部 commit（T6-T12）**：
+- T6: `f2821c5` + `a6bd556` + `3f1d1e4` (agent-log)
+- T7: `8682996` + `ba384e9` + `15849d6` (agent-log)
+- T8: `deba103` + `23f56ae` + `9b15283` (agent-log)
+- T9: `6d36c6e` + `1520d9f` + `6cef667` (agent-log)
+- T10: `6fad955` + `f0f9e47` + `04bd9e9` (agent-log)
+- T11: `26cda7e` + `a17a996` + `b8c2299` (agent-log)
+- T12: `b0ea224` + `16edaf7` + (本 agent-log entry)
+
+---
