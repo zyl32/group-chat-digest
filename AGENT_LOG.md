@@ -670,3 +670,71 @@
 - `1520d9f` fix(todo-state): freeze _TRANSITIONS via MappingProxyType, add edge case + attribute tests
 
 ---
+
+## [2026-08-05] Task T10: ICS 导出（纯字节）
+
+**所在 worktree**：`wt-parsers-llm`（分支 `worktree-wt-parsers-llm`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T10 完整 TDD — `export_ics(todos)` + `_fmt_dt` + `_escape` helper + 5 个测试（2 spec + 3 proactively added: empty/multiple/escape）
+- 关键约束：
+  1. RFC 5545 compliance（CRLF 行尾、backslash-first 转义顺序）
+  2. `__all__ = ["export_ics"]`（私有 helper 不导出）
+  3. YAGNI（不加 export_todoist_url，T18 范围）
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`6fad955` "feat: add ICS export for todos"
+- 37 项测试全过（32 prior + 5 new）
+- Self-review 6 项 checklist 全过
+- 主动 disclosed：`test_ics_no_due` 的 `b"买咖啡"` 又是 SyntaxError（同 T8 教训）— 改用 `"买咖啡".encode("utf-8") in out`
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 12 项 spec 逐条对：2 个文件 ✅；`export_ics` 签名 ✅；6 个 ICS 结构 marker ✅；UID 格式 + 1-indexed ✅；DTSTART 格式 `YYYYMMDDTHHMMSSZ` ✅；CRLF ✅；`_escape` backslash-first ✅；`_fmt_dt` 用 `strftime` ✅；2 必需测试 + 3 authorized ✅
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with one fix**
+- Strengths：54 行单文件单职责、`__all__` + docstring 完整、`_escape` 顺序正确、edge-case 覆盖好、UID `enumerate` 稳定
+- Important issue：
+  - **HIGH #1**：`_fmt_dt` 用 `strftime("%Y%m%dT%H%M%SZ")` 追加 `Z`（UTC marker）但不转 UTC。非 UTC tz-aware datetime 输入 → 静默 8 小时偏差。Fix：`if dt.tzinfo is None: raise ValueError` + `dt.astimezone(timezone.utc).strftime(...)`
+- Minor issues（不阻断）：
+  - MED #2：缺 `what` 字段抛裸 `KeyError` — 可加 context message（acceptable contract，跳过）
+  - LOW #3：`_escape` 未转义 `\r`（RFC 5545 也要求，T10 范围可跳）
+  - LOW #4：无 75-octet line folding（RFC 5545 要求，T10 范围可跳）
+  - LOW #5：`if t.get("due_at"):` truthy 检查对 `datetime(1970,...)` epoch 误判 false — 改 `is not None`
+  - LOW #6：escape test 断言 `"\\n" in text` 太松 — 可改为精确匹配 SUMMARY 行
+
+**派发 fix implementer**：
+- 模型：haiku
+- 修复 1（HIGH）：`_fmt_dt` 加 `if dt.tzinfo is None: raise ValueError("due_at must be tz-aware; got naive datetime")` + `dt.astimezone(timezone.utc).strftime(...)`；merge import 为 `from datetime import datetime, timezone`
+- 修复 2（LOW）：`if t.get("due_at"):` → `if t.get("due_at") is not None:`；`if t.get("who"):` → `if t.get("who") is not None:`
+- 修复 3：测试加 `test_ics_non_utc_timezone_normalizes_to_utc`（America/New_York 1:00 → UTC 5:00）+ `test_ics_naive_datetime_raises`（match "tz-aware"）
+- Commit：`f0f9e47` "fix(export): normalize non-UTC datetimes to UTC, validate tz-aware, fix truthy check"
+- 验证：39 passed（37 prior + 2 new）
+
+**人工干预**：
+- 编排器跑 `uv run pytest -v` 验证：39 passed
+- 跳过完整 re-review：fix 涉及 1 个 helper 函数逻辑 + 2 个测试 + 2 处 truthy 改 `is not None`
+- MED KeyError wrapping 不修 — `what` 是 documented required field，KeyError 是 acceptable contract violation
+- LOW `\r` escape / 75-octet folding 不修 — T10 范围，T18 可再补
+
+**学到的教训**：
+1. **静默时区偏差是隐藏炸弹**：`strftime("...Z")` 追加 `Z`（UTC marker）但不转 UTC — 非 UTC tz-aware 输入静默偏差。教训：任何带 `Z` 后缀的时间格式化必须先 `astimezone(timezone.utc)`，并 `raise` naive datetime 防御。
+2. **`b"非ASCII"` SyntaxError 已第 2 次出现**：T8 与 T10 都犯 — Python bytes literal 只允许 ASCII。教训（持久化）：测试含 CJK 字符的 bytes 输入必须 `"...".encode("utf-8")`。
+3. **truthy 检查的陷阱**：`if t.get("due_at"):` 对 `datetime(1970,1,1,0,0, tzinfo=timezone.utc)`（epoch）误判 false — datetime 对象 truthy 但其与 `__bool__` 默认 `True`，实际无问题；但 `if t.get("who"):` 对 `""` 误判 false（empty string）— 应改 `is not None`。教训：所有 `dict.get` + truthy 检查的 field-guard 都用 `is not None`。
+4. **`__all__` 区分 public API 与 internal helper**：`export_ics` 在 `__all__`，`_fmt_dt`/`_escape` 不在（前缀 `_` 也暗示私有）。教训：模块 `__all__` 列出 public，下划线命名 + 不在 `__all__` 双重标记 private。
+5. **proactive 测试覆盖隐藏 contract**：T10 implementer 主动加 3 个测试（empty/multiple/escape），spec reviewer 全部接受为 authorized extensions，code quality reviewer 据此才能进一步发现 UTC 偏差。教训：先写超出 spec 的测试 → reviewer 据此找更深 bug。
+
+**T10 完成 commit 链**：
+- `6fad955` feat: add ICS export for todos
+- `f0f9e47` fix(export): normalize non-UTC datetimes to UTC, validate tz-aware, fix truthy check
+
+---
