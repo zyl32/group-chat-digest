@@ -1055,3 +1055,92 @@
 - `405d19b` fix(upload-router): sanitize filename, chunked size check, mask parse errors, harden scheduler/conftest
 
 ---
+
+## [2026-08-05] Task T15: Digest Service（LLM 摘要 + Pydantic schema + fallback）
+
+**所在 worktree**：`wt-services-routers`（分支 `worktree-wt-services-routers`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T15 完整 TDD — `app/schemas/{__init__,llm_response}.py`（4 Pydantic models）+ `app/services/digest.py`（`DigestService.generate`）+ 2 PLAN 测试 + 2 edge case 测试
+- 关键约束：
+  1. **PLAN spec 字面用 `datetime.utcnow()`** — T4 lesson 必须改 `datetime.now(timezone.utc)`
+  2. PLAN spec 测试用 `messages=[...]` 占位符 — 替换为真实 `ParsedMessage` 对象（frozen dataclass，需 `timestamp: datetime`）
+  3. coding-style.md 强制 type hints / `__all__`
+  4. `LLMProvider` Protocol 类型注解 `llm` 参数；`LLMMessage` TypedDict 返回 `_build_prompt`
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`01b05b4` "feat(services): add DigestService with schema validation and fallback"
+- 69 项测试全过（65 prior + 4 new = 2 PLAN + 2 edge case）
+- 5 项 disclosed deviations：
+  1. `_llm.complete(prompt, ...)` 用 positional arg — `LLMProvider.complete(messages, schema=None)` 第一参数 `messages` 是 positional
+  2. 加 `self._session.refresh(digest)` 让 `digest.id` 在 commit 后 populate — 支持 `test_digest_commits_to_session` 断言 `queried.id == digest.id`
+  3. 加防御性 `if not blocks: blocks = [FALLBACK_BLOCK]` 处理 valid-but-empty-JSON（`{"blocks":[]}`）
+  4. 加 2 个 edge case 测试：`test_digest_commits_to_session` + `test_digest_empty_messages`
+  5. `ParsedMessage.timestamp` 用 `datetime(2026, 8, 5, 10, 0, 0)`（frozen dataclass 要求 datetime，非 Optional）
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 4 文件全在 ✅；4 测试通过（2 PLAN + 2 edge）✅；`FALLBACK_BLOCK` 内容精确匹配 ✅；`model_used=llm.name()`（非硬编码）✅；`datetime.now(timezone.utc)` 已用（T4 lesson 跟随）✅；无 out-of-scope 修改 ✅；`uv.lock` 未 staged ✅
+- 5 deviations 全部接受（positional arg 符合 signature / refresh 必要 / 防御性合理 / edge case 测试相关 / frozen datetime 必需）
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with fixes**
+- Strengths：分离干净（prompt build / LLM call / validate / persist）；Pydantic v2 idiom 正确（`model_validate_json`/`model_dump`）；specific exception 无 bare except；`__all__` 齐；文件 < 200 行；fallback 路径有测试；frozen dataclass `ParsedMessage` 用对；Factory/Registry pattern 跟随
+- Important issues：
+  - **DRY/mutable #1**：`FALLBACK_BLOCK: dict` 模块级 mutable，`blocks = [FALLBACK_BLOCK]` 让每个 fallback Digest 共享同一 dict 引用 — 下游 mutate 会污染全局。修复：`blocks = [{**FALLBACK_BLOCK}]` 每次新 dict
+  - **Silent #2**：fallback 时无 `logger.warning` — operator 看不到 LLM 质量回归。修复：加 `logger.warning("digest fallback for upload_id=%s", upload_id, exc_info=True)`
+  - **Resilience #3**：`self._llm.complete(...)` 重试耗尽后仍可能 raise（network/auth）— 当前 propagate 中断 upload 流水线，违反 spec "resilient to flaky LLM"。修复：`except Exception: blocks = []` + warning，让 fallback 接住
+  - **Type #4**：`TodoItem.source_msg_id: int | None`，但 `ParsedMessage.msg_id: str`（wechat/feishu ID 是 alphanumeric）。Pydantic v2 lax 模式 coerce 数字字符串但 reject `"m1"`。T16 latent bug。修复：`source_msg_id: str | None`
+  - **Transaction #5**：`session.commit()` 中途提交，若 caller 有 open transaction 会误提交无关 pending changes。修复：`session.flush()` populate `id` 不 commit；caller 控制事务边界
+  - **FK #6**：无 `upload_id` 存在性检查 — SQLite 默认不 enforce FK。修复：加 `Upload` row 存在性检查 或 `PRAGMA foreign_keys=ON`。**编排器决定**：暂不修，加 TODO(T17) — 需要 fixture 重构（测试用 `upload_id="u1"` 无 Upload row），T17 整合时会自然解决
+  - **Schema #7**：Pydantic models 无 `model_config = ConfigDict(extra="forbid")` — stray LLM keys 静默接受，masking prompt drift。修复：每个 model 加 `extra="forbid"`
+- Minor issues（不阻断）：
+  - LOW #8：`window="24h"` + date format 是 magic string — hoist 为 module 常量
+  - LOW #9：`hasattr(m, "sender")` duck-types — 改 `isinstance(m, ParsedMessage)` 让 silent misuse 显式 raise
+  - LOW #10：prompt injection 向量（user content 直插 prompt）— v1 接受，未来 iteration 加 delimiter
+  - LOW #11：`FALLBACK_BLOCK: dict` 类型太松 — 改 `dict[str, object]`
+  - LOW #12：mock response 用 substring key 耦合 system prompt wording — T11 MockLLMAdapter API 限制，不动
+
+**派发 fix implementer**：
+- 模型：编排器直接执行（多文件机械修改，T8 precedent）
+- 修复 #1：`blocks = [{**FALLBACK_BLOCK}]` 每次 shallow copy 新 dict
+- 修复 #2：加 `logger = logging.getLogger(__name__)` + `logger.warning("digest fallback (bad json) for upload_id=%s", upload_id, exc_info=True)`
+- 修复 #3：包 `self._llm.complete(...)` 在 `try: ... except Exception: blocks = []; logger.warning("digest fallback (llm error) ...")`
+- 修复 #4：`TodoItem.source_msg_id: str | None`（匹配 `ParsedMessage.msg_id: str`）+ docstring 说明
+- 修复 #5：`session.commit()` → `session.flush()`，删 `session.refresh(digest)`（flush 已 populate id，refresh 多余）
+- 修复 #7：每个 Pydantic model 加 `model_config = ConfigDict(extra="forbid")`
+- 修复 #8：`_WINDOW = "24h"` + `_DATE_FMT = "%Y-%m-%d"` 模块常量
+- 修复 #9：`hasattr(m, "sender")` → `isinstance(m, ParsedMessage)`，import `ParsedMessage` from `app.adapters.parsers.base`
+- 修复 #11：`FALLBACK_BLOCK: dict[str, object]`
+- 跳过：#6 upload_id 检查（需 fixture 重构，加 TODO(T17)）/ #10 prompt injection（v1 接受）/ #12 mock API（不动）
+- 加 `test_digest_fallback_on_llm_exception` 测试覆盖 #3 新 except path — 用 inline `_RaisingLLM` stub
+- Commit：`9baa652` "fix(digest-service): fresh fallback dict, log+fallback on llm error, flush not commit, extra=forbid, source_msg_id str"
+- 验证：70 passed（69 prior + 1 new llm-exception test）
+
+**人工干预**：
+- 编排器跑 `uv run pytest -q`：70 passed
+- 编排器直接 Read 验证：`logger.warning` 两处 + `[{**FALLBACK_BLOCK}]` + `flush()` + `extra="forbid"` × 4 model + `source_msg_id: str | None` + `isinstance(m, ParsedMessage)` 全部应用
+- 跳过完整 re-review：fix 范围是 7 处机械修改 + 1 个新测试，三重验证足够
+
+**学到的教训**：
+1. **模块级 mutable dict 是共享态陷阱**：`FALLBACK_BLOCK: dict` + `blocks = [FALLBACK_BLOCK]` 让所有 fallback Digest 共享同一 dict 引用。下游 `digest.summary_blocks[0]["topic"] = "X"` 会污染所有共享 row。修复：`[{**FALLBACK_BLOCK}]` 每次 shallow copy。教训：模块级常量若是 mutable（dict/list），消费时必须 copy。
+2. **silent fallback 是运营盲区**：LLM 输出格式漂移时，fallback 静默触发，operator 看不到回归。`logger.warning(..., exc_info=True)` 让日志可见 + stack trace 留诊断线索。教训：任何 fallback / default path 必须有 `logger.warning` 标记，否则 LLM 质量回归会 silent 累积。
+3. **resilient contract 必须包所有 raise path**：spec 说 "resilient to flaky LLM output"，但 PLAN spec impl 段只 try `JSONDecodeError`/`ValidationError`，不 try `complete()` raise。重试耗尽后 `APIError` 仍会 propagate 中断流水线。修复：包整个 `complete()` 在 try/except，所有失败路径都接 fallback。教训：spec 的 "resilient" 是契约 — review 时要枚举所有 raise 路径，让 fallback 兜底。
+4. **Pydantic v2 `extra="forbid"` 防 prompt drift**：LLM 输出可能含多余字段（schema 演进 / model 切换），默认 `extra="allow"` 静默接受，masking 契约违反。`extra="forbid"` 让 stray key 显式 raise，prompt 漂移立即暴露。教训：所有 LLM-消费 Pydantic model 必须加 `extra="forbid"`，把 schema 契约变硬约束。
+5. **`flush()` vs `commit()` 事务边界**：service 层 `commit()` 强行提交，会误提交 caller 的 pending changes（如 upload pipeline 的其他 row）。`flush()` 只发 INSERT/UPDATE 到 DB session（populate id），不 commit，让 caller 控制 txn 边界。教训：service 层用 `flush()` 让 caller 决定 commit 时机，遵循"事务边界单一职责"。
+6. **frozen dataclass 字段类型是契约**：`ParsedMessage.msg_id: str`（不可变）vs PLAN spec `TodoItem.source_msg_id: int | None` — 类型不匹配。Pydantic v2 lax 模式 coerce 数字字符串（`"1"` → `1`）但 reject alphanumeric（`"m1"` → raise）。wechat/feishu msg_id 是 alphanumeric，所以 `int` 会炸。修复：`source_msg_id: str | None` 跟 parser 契约对齐。教训：跨模块字段类型必须对齐，特别是 frozen dataclass / TypedDict / Pydantic model 三者交接处。
+7. **duck typing (`hasattr`) 让 silent misuse 隐身**：`hasattr(m, "sender")` 让任何有 `sender` 属性的对象都通过，但若 caller 传错对象（如 `dict`），`str(m)` fallback 会 silently 把 dict 字面量拼进 prompt。`isinstance(m, ParsedMessage)` 让错对象显式 raise。教训：内部契约用 `isinstance` 不用 `hasattr`，让 misconfiguration 显式爆。
+
+**T15 完成 commit 链**：
+- `01b05b4` feat(services): add DigestService with schema validation and fallback
+- `9baa652` fix(digest-service): fresh fallback dict, log+fallback on llm error, flush not commit, extra=forbid, source_msg_id str
+
+---
