@@ -602,3 +602,71 @@
 - `23f56ae` test(parsers): assert plain parser timestamp parsing
 
 ---
+
+## [2026-08-05] Task T9: 待办状态机（纯逻辑）
+
+**所在 worktree**：`wt-parsers-llm`（分支 `worktree-wt-parsers-llm`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T9 完整 TDD — `TodoStateMachine` + `IllegalTransition` + `_TRANSITIONS` dict + 7 个测试（4 valid + 3 illegal）
+- 关键约束：
+  1. 仅 4 个 transitions，YAGNI（不加 done→archived 等）
+  2. `IllegalTransition` 存 `frm`/`action` 属性便于上层处理
+  3. 创建 `app/services/__init__.py`（空 `__all__` package marker）
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`6d36c6e` "feat: add todo state machine with explicit transitions"
+- 30 项测试全过（23 prior + 7 new）
+- Self-review 6 项 checklist 全过：tests count、`__all__` 双处声明、类型注解、`_TRANSITIONS` 类型准确、4 transitions only、`uv.lock` 未 stage
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 18 项 spec 逐条对：3 个文件存在 ✅；`IllegalTransition` 继承 Exception + `__init__(frm, action)` + 存属性 + 消息格式精确匹配 ✅；`_TRANSITIONS` 4 entries 精确匹配 ✅；`TodoStateMachine.transition` 签名 + 行为 ✅；7 个测试名 + 断言 + `pytest.raises` 全过 ✅
+- Observations：instance method（非 staticmethod，合理）；`_TRANSITIONS` 模块级（非 class attr 或 Final，fine）；类型注解比 spec 最低要求更好
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with one fix**
+- Strengths：纯逻辑模块无副作用、`IllegalTransition` 存属性便于调试、`_TRANSITIONS` 显式数据表（非命令式 branch）、7 测试覆盖全 4 valid + 3 illegal、`__all__` 正确、类型提示完整
+- Important issue：
+  - **MEDIUM #1**：`_TRANSITIONS` 是 runtime-mutable `dict`，任何模块可改 `_TRANSITIONS[("pending","done")] = "weird"` 静默破坏状态机。Fix：`MappingProxyType` 包装（`in` 与 `__getitem__` 在 proxy 上仍工作，调用点无变化）+ `Final[Mapping[...]]` 类型
+- Minor issues（不阻断）：
+  - LOW #2：`transition` 未用 `self` — `@staticmethod` 显式化（保留 instance method 允许未来 audit trail）
+  - LOW #3：`if ... in` 后二次 dict lookup — 可改 try/except KeyError（purely cosmetic）
+  - LOW #4：缺 `("done", "done")` 边界测试（已 done 状态再 mark done — 用户最常尝试的非法路径）
+  - LOW #5：缺 `IllegalTransition` 属性 contract 测试（`e.frm`/`e.action` 是 public API）
+  - LOW #6：`services/__init__.py` 空 `__all__` — T17 Todo Router 落地时 re-export `TodoStateMachine`
+
+**派发 fix implementer**：
+- 模型：haiku（机械加 MappingProxyType + 2 个测试）
+- 修复 1：`app/services/todo_state.py` 加 `from types import MappingProxyType` + `from typing import Final, Mapping`，`_TRANSITIONS` 包装为 `MappingProxyType({...})`，类型改 `Final[Mapping[tuple[str, str], str]]`
+- 修复 2：`tests/unit/test_todo_state_machine.py` 加 `test_done_to_done_rejected`（`("done","done")` 应抛 IllegalTransition）
+- 修复 3：加 `test_illegal_transition_attributes`（验证 `exc_info.value.frm == "done"` + `.action == "reactivate"`）
+- Commit：`1520d9f` "fix(todo-state): freeze _TRANSITIONS via MappingProxyType, add edge case + attribute tests"
+- 验证：32 passed（30 prior + 2 new）
+
+**人工干预**：
+- 编排器跑 `uv run pytest -v` 验证：32 passed
+- 跳过完整 re-review：fix 涉及 1 文件类型注解 + 2 个测试，机械添加
+- LOW staticmethod 不修 — 保留 instance method 允许未来 audit trail（T17+ 决定）
+- LOW try/except 不修 — `if ... in` 更显式，Zen of Python
+
+**学到的教训**：
+1. **常量表应该 immutable**：`_TRANSITIONS` 是基础事实表，runtime-mutable 是隐藏风险。`MappingProxyType` 包装让 `__setitem__` 抛 TypeError，把"不要修改"从注释升级为运行时强制。教训：所有 module-level 常量 dict 考虑 `MappingProxyType` 包装。
+2. **`Final` 是类型层 immutability**：`Final[...]` 告诉 type checker "不要 reassign 这个变量"，但运行时不阻止 dict 内容修改。配合 `MappingProxyType` 才是双层防护。教训：`Final` + `Mapping` 类型 + `MappingProxyType` 运行时包装，三层一起用。
+3. **测试属性 contract**：`IllegalTransition.frm` 和 `.action` 是 public API，未来重构（如重命名 `frm` → `from_`）会破坏调用方。一个 attribute contract 测试就能锁定。教训：自定义异常的属性要配 contract 测试。
+4. **现实路径测试**：`("done","done")` 是用户最常尝试的非法路径（重复标记完成），加一个测试锁住 contract。教训：spec 列出的 illegal 路径 + 用户高频路径，都要测。
+5. **`@staticmethod` vs instance method**：reviewer 建议改 staticmethod，但我保留 instance method。原因：未来若需要 audit trail（log 每次 transition），instance method 能存 `self._audit_log`，staticmethod 不能。提前优化成 staticmethod 是 YAGNI。教训：method 形式看未来扩展需求，不要为了"显式无状态"过早优化。
+
+**T9 完成 commit 链**：
+- `6d36c6e` feat: add todo state machine with explicit transitions
+- `1520d9f` fix(todo-state): freeze _TRANSITIONS via MappingProxyType, add edge case + attribute tests
+
+---
