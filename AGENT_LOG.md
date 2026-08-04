@@ -738,3 +738,76 @@
 - `f0f9e47` fix(export): normalize non-UTC datetimes to UTC, validate tz-aware, fix truthy check
 
 ---
+
+## [2026-08-05] Task T11: MockLLM Adapter
+
+**所在 worktree**：`wt-parsers-llm`（分支 `worktree-wt-parsers-llm`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T11 完整 TDD — `LLMProvider` Protocol + Registry + `MockLLMAdapter` + 6 个测试 + 激活 `mock_llm` fixture
+- 关键约束：
+  1. Factory/Registry 模式（coding-style.md）
+  2. `LLMMessage` 升级为 `TypedDict`（spec 用 `dict` 别名）
+  3. `@runtime_checkable` Protocol 支持 `isinstance` 检查
+  4. `_LLM_PROVIDERS` 私有 mutable + `LLM_PROVIDERS` 公有 `MappingProxyType`（T9 lesson）
+  5. 沿用 T6-T10 lessons：pytest.raises + match、不 stage uv.lock
+
+**subagent 输出关键片段**：
+- 状态：**DONE_WITH_CONCERNS** — 主动 disclosed PLAN spec 内部矛盾
+- Commit：`26cda7e` "feat: add LLMProvider protocol, Registry, and MockLLM adapter"
+- 45 项测试全过（39 prior + 6 new）
+- **关键 deviation**：PLAN spec 内部矛盾——
+  - `mock.py` spec 字面：`fail_n_times` 让 `complete()` 直接 `raise self._fail_exc`（caller 看到失败）
+  - `test_failure_injection` spec 字面：单次 `complete()` 同时返回 `"y"` 且 `call_count == 3`
+  - 两者互斥。implementer 选择 **silent internal retry**：`complete()` 内部循环，每次 `call_count += 1`，吞下 failure 直到 `fail_n_times` 耗尽，然后返回 success response
+  - 与 T12 `test_deepseek_retry_on_5xx` 一致（adapter 内部 retry，caller 看到最终结果或耗尽后的异常）
+- 主动删了未用的 `register_provider` import（ruff F401）
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant (with disclosed deviations accepted)
+- 13 项 spec 逐条对：5 个文件 ✅；`LLMProvider` Protocol 两方法 ✅；`MockLLMAdapter` 注册 "mock" ✅；3 个 spec 测试通过 ✅；`mock_llm` fixture 已激活 ✅；Protocol 结构匹配 ✅
+- Deviation resolution assessment：silent internal retry 合理——TDD 测试是真相源，PLAN spec impl 段落与 test 段落矛盾时信 test；与 T12 retry 语义一致
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with one fix**
+- Strengths：`@runtime_checkable` Protocol、`MappingProxyType` 注册表、`LLMMessage` TypedDict、retry 封装在 adapter 内部、`mock_llm` fixture `Iterator[MockLLMAdapter]` 类型、测试用 `pytest.raises(..., match=...)`
+- Important issue：
+  - LOW #1：`app/adapters/llm/__init__.py` 的 `from ..llm_provider import register_provider  # noqa: F401` 是冗余 side-effect import — `mock.py` 已直接 import 它，完全加载模块，`__init__.py` 那行多余
+- Minor issues（不阻断）：
+  - SUG #2：`mock.py:31` 的 `assert self._fail_exc is not None` 在 `python -O` 下会被移除 — 改 `if self._fail_exc is None: raise RuntimeError` 或保留（mock 是 test-only，可接受）
+  - SUG #3：`_LLM_PROVIDERS: dict[str, type]` 太松，应改 `dict[str, type[LLMProvider]]`（T6 PARSERS 教训重演）
+  - SUG #4：缺 2 个测试 — `test_no_matching_response_returns_empty`（fallback `return ""`）+ `test_fail_zero_times_is_noop`（n=0 边界）
+
+**派发 fix implementer**：
+- 模型：haiku
+- 修复 1：删 `app/adapters/llm/__init__.py` 第 3 行冗余 import
+- 修复 2：`app/adapters/llm_provider.py` 类型收紧 — `_LLM_PROVIDERS: dict[str, type[LLMProvider]]`、`LLM_PROVIDERS: Final[Mapping[str, type[LLMProvider]]]`、`register_provider` decorator `cls: type[LLMProvider] -> type[LLMProvider]`
+- 修复 3：加 2 个测试 `test_no_matching_response_returns_empty` + `test_fail_zero_times_is_noop`
+- Commit：`a17a996` "fix(llm): drop redundant init import, tighten registry types to type[LLMProvider], add edge case tests"
+- 验证：47 passed（45 prior + 2 new）
+
+**人工干预**：
+- 编排器跑 `uv run pytest -v` 验证：47 passed
+- 跳过完整 re-review：fix 涉及 1 行删 + 类型注解 + 2 个测试，机械添加
+- SUG `assert` 不修 — mock 是 test-only，invariant 由 `fail_n_times` 保证
+
+**学到的教训**：
+1. **PLAN spec 内部矛盾要主动 disclose**：implementer 报 DONE_WITH_CONCERNS 而非假装 DONE，让 spec reviewer 评估 deviation 是否合理。TDD 下测试是真相源，impl 段落与 test 段落冲突时信 test。教训：subagent 自报矛盾是健康信号，不要惩罚。
+2. **Mock 应模拟完整 adapter 行为**：`MockLLMAdapter` 不只是"返回预设响应"，还模拟"内部 retry + 失败注入"。这让 service 层测试（T15/T16）能验证 retry 语义而无需实现 retry 逻辑。教训：mock 不是 stub，是真实 adapter 的简化版。
+3. **`@runtime_checkable` Protocol 的代价**：`isinstance(llm, LLMProvider)` 仅检查方法存在性，不检查签名。但配合 `type[LLMProvider]` registry 类型，能在静态层与运行时层双锁定契约。教训：Protocol 用 `@runtime_checkable` + `type[Protocol]` registry 类型双层防护。
+4. **`MappingProxyType` 的私有/公有拆分**：`_LLM_PROVIDERS`（私有 mutable）+ `LLM_PROVIDERS`（公有 `MappingProxyType`）— `register_provider` 写私有，外部读公有。教训：registry 模式用两个变量名分离读写权限。
+5. **冗余 side-effect import 是常见反模式**：`__init__.py` 的 `from ..llm_provider import register_provider  # noqa: F401` 看似触发模块加载，实际 `mock.py` 已直接 import 它。教训：`__init__.py` 只放真正的 re-export，不放"为了触发加载"的 import（Python import 系统会自动处理依赖）。
+6. **`type[Protocol]` registry 类型**：与 T6 PARSERS 教训一致 — registry value 类型应是 `type[Interface]` 而非裸 `type`。这次 T11 spec 字面用 `dict[str, type]`，implementer 沿用，reviewer 又抓到。教训：写 PLAN 时 registry 类型直接写 `dict[str, type[Protocol]]`，不要图省事写 `dict[str, type]`。
+
+**T11 完成 commit 链**：
+- `26cda7e` feat: add LLMProvider protocol, Registry, and MockLLM adapter
+- `a17a996` fix(llm): drop redundant init import, tighten registry types to type[LLMProvider], add edge case tests
+
+---
