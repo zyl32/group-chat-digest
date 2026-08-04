@@ -205,3 +205,87 @@
 - `89a9832` fix(config): load YAML file, add edge case tests, defer structured validation TODO
 
 ---
+
+## [2026-08-05] Task T4: 数据模型（SQLAlchemy ORM）
+
+**所在 worktree**：`wt-foundation`（分支 `worktree-wt-foundation`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T4 完整 TDD — 创建 7 个模型文件 + 1 个测试文件
+- 模型清单：Upload/Message/Digest/Todo/Setting + db.py(Base+get_engine+get_session) + `__init__.py` 导出 `__all__`
+- 关键约束：coding-style.md `__all__` 要求、YAGNI（不加 Alembic、不加额外列）、Conventional Commits
+- 给定完整 PLAN.md T4 节文本（含所有模型代码）
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`7347232` "feat: add SQLAlchemy models for Upload/Message/Digest/Todo/Setting"
+- 7 项测试全过（5 prior + 2 new）
+- Self-review 抓到 2 处需调整：
+  1. `app/models/message.py` 删除未用的 `from datetime import datetime`（`timestamp` 列用 `DateTime` 类型而非 `datetime` 调用）
+  2. **必要偏离**：`Upload.id` 加 `default=_new_uuid`（`str(uuid.uuid4())`）—— 不加的话 T4 测试 `Upload(filename=..., fmt=..., size=..., status=...)` 会因 `NOT NULL constraint failed: uploads.id` 失败。spec 注释 `# uuid` 暗示这就是设计意图
+- 关注点（非阻断）：
+  - `datetime.utcnow()` 在 Python 3.12+ 已弃用（verbatim from PLAN.md）
+  - `get_session` 退出时 auto-commit（by spec，后续 service 层可能需要更细控制）
+  - `Upload.id` String 列在 SQLite 中无界，36 字符 uuid 完全容纳
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 验证方式：独立 `git show 7347232 -- <file>` 读 8 个文件，逐项对比 spec 10 条要求
+- 结论：✅ Spec compliant
+  - 8 个文件全部存在
+  - 4 个模型字段全部对齐 spec（含 UniqueConstraint、index、unique=True、default 值）
+  - `__all__` 含全部 8 个公共符号
+  - 测试数 = 2（无额外测试）
+  - `_new_uuid` 默认是必要偏离（让 literal 测试通过），列类型仍是 String PK，未变 — 在 leniency 范围内
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with two small fixes**
+- Strengths：
+  - 模块分离干净（每文件 < 25 行，远低于 400 行上限）
+  - `_new_uuid` 是模块级函数 + 类型注解，`default=_new_uuid` 引用而非调用 — 正确 SQLAlchemy 模式
+  - FK + index 配置合理（Message.upload_id/Todo.upload_id 索引，Digest.upload_id unique 1:1）
+  - `except Exception:` 具体异常非 bare except
+  - 包内相对导入 + 包外绝对导入 — PEP 8 合规
+- Important issues：
+  - **HIGH #1**：`datetime.utcnow` 在 Python 3.12+ 弃用，CI 每次 emit `DeprecationWarning`。修复：4 处 call site 改为 `lambda: datetime.now(timezone.utc)`
+  - **HIGH #2**：`get_session(engine)` 缺类型注解，违反 coding-style.md "all functions must have type hints"。修复：`engine: Engine` + import `Engine` from sqlalchemy
+- Minor issues（不阻断）：
+  - 测试覆盖缺口（Digest CRUD / Setting CRUD / UniqueConstraint / Todo.state 默认值）— 推到 T5 fixtures 一并处理
+  - `ResourceWarning: unclosed database` — 测试无 dispose engine，Low 优先级
+  - `get_session` auto-commit 违反单一职责 — by spec，service 层可能需要更细控制，T7+ 再评估
+  - `Column` 风格 vs SQLAlchemy 2.0 `Mapped[...]` — INFO，PLAN.md spec literal 用 Column，无即时收益，不动
+
+**派发 fix implementer**：
+- 模型：haiku（机械替换 + 类型注解添加）
+- 修复 1：4 处 `datetime.utcnow` → `lambda: datetime.now(timezone.utc)`
+  - `app/models/upload.py:20` received_at
+  - `app/models/digest.py:16` created_at
+  - `app/models/todo.py:18-19` created_at + updated_at（含 onupdate）
+  - 4 个文件 import 行加 `timezone`
+- 修复 2：`app/models/db.py` `get_session(engine)` → `get_session(engine: Engine)`，import 加 `Engine`
+- Commit：`ac5d1ed` "fix(models): replace deprecated datetime.utcnow with timezone-aware now, type hint get_session"
+- 验证：`uv run pytest -v` → 7 passed，`utcnow` DeprecationWarning 已清；仅剩 Starlette TestClient 上游弃用警告（非本项目代码，T1 已知）
+
+**人工干预**：
+- 编排器跑 `uv run pytest -v` 验证：7 passed，warnings summary 中无 `utcnow` 条目，仅 Starlette 上游警告
+- 跳过完整 re-review：fix 范围极小（4 处 lambda 替换 + 1 个类型注解 + 2 个 import 修改），implementer 自报 + 编排器跑测试 + 直接读 diff 三重验证足够
+- Minor 推迟：测试覆盖缺口推到 T5（conftest 会需要更广的 fixtures，到时一起补 Digest/Setting/UniqueConstraint/Todo default 测试）
+
+**学到的教训**：
+1. **PLAN.md 中的 sample code 会带病传播**：T4 spec literal 用了 `datetime.utcnow`，第一个 worktree 就把弃用警告引入。教训与 T1 `[tool.uv]` 弃用一样 — 写 PLAN 时若 sample code 引用了某个标准库 API，最好快速查一下当前 Python 版本是否还支持。Backport 修复到 PLAN.md？这次没做，因为 fix 只 4 行且已记入 AGENT_LOG；后续 worktree 不会重做 T4，无传播风险。
+2. **必要偏离要明示**：implementer 主动报告 `_new_uuid` default 是为了让 literal 测试通过而加的，spec reviewer 在 leniency 范围内接受。如果 implementer 隐瞒，spec reviewer 会判违规。Subagent 自报偏差是健康信号。
+3. **`Column` vs `Mapped[...]`**：reviewer 建议保留 `Column` 风格，因为 spec literal 用了它，且整个项目尚未确立 2.0 typed ORM 模式 — 切换会让 T4 偏离 spec 且无即时收益。教训：风格选型看 spec 与已有 pattern，不要在 foundation task 里搞"理想主义重构"。
+4. **Test coverage 推迟到合适 task**：T4 测试只覆盖核心 Upload→Message→Todo 路径，Digest/Setting/UniqueConstraint 都没测。reviewer 没要求 T4 补，因为 T5（conftest fixtures）会自然需要更广的 fixtures，到时一并补更合适。教训：测试覆盖增量要随 fixtures 一起长，不要为了 round-trip 强塞。
+5. **`datetime.now(timezone.utc)` 的 lambda 包装**：直接写 `default=datetime.now(timezone.utc)` 会立即求值（所有行共享同一时间戳），必须 `default=lambda: datetime.now(timezone.utc)` 才能在每次 insert 时重新调用。SQLAlchemy `default` 接受 callable，这是常见 gotcha。
+
+**T4 完成 commit 链**：
+- `7347232` feat: add SQLAlchemy models for Upload/Message/Digest/Todo/Setting
+- `ac5d1ed` fix(models): replace deprecated datetime.utcnow with timezone-aware now, type hint get_session
+
+---
