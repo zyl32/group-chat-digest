@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 Base = declarative_base()
@@ -11,7 +11,7 @@ def get_engine(url: str = "sqlite:///data/db/app.db"):
 
 
 @contextmanager
-def get_session(engine) -> Session:
+def get_session(engine: Engine) -> Session:
     session = sessionmaker(bind=engine)()
     try:
         yield session

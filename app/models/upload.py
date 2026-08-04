@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Integer, String
 
@@ -17,6 +17,6 @@ class Upload(Base):
     filename = Column(String, nullable=False)
     fmt = Column(String, nullable=False)
     size = Column(Integer, nullable=False)
-    received_at = Column(DateTime, default=datetime.utcnow)
+    received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     status = Column(String, default="received")  # received|parsing|done|failed
     error_msg = Column(String, nullable=True)
