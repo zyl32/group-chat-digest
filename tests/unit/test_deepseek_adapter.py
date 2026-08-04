@@ -2,6 +2,7 @@
 import pytest
 import respx
 from httpx import Response
+from openai import APIError
 
 from app.adapters.llm.deepseek import DeepSeekAdapter
 
@@ -22,10 +23,8 @@ def test_deepseek_retry_on_5xx():
         return_value=Response(503)
     )
     adapter = DeepSeekAdapter(api_key="sk-test", retry_max=3)
-    try:
+    with pytest.raises(APIError):
         adapter.complete([{"role": "user", "content": "x"}])
-    except Exception:
-        pass
     assert route.call_count == 3
 
 

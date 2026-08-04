@@ -1,7 +1,9 @@
 """Tests for OpenAIAdapter — OpenAI SDK with retry on 5xx/network errors."""
 import pytest
 import respx
+import httpx
 from httpx import Response
+from openai import APIError
 
 from app.adapters.llm.openai_adapter import OpenAIAdapter
 
@@ -26,3 +28,13 @@ def test_openai_4xx_no_retry():
     with pytest.raises(Exception):
         adapter.complete([{"role": "user", "content": "x"}])
     assert route.call_count == 1
+
+
+@respx.mock
+def test_openai_retry_on_5xx():
+    route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+        side_effect=httpx.Response(503, json={"error": "server error"})
+    )
+    with pytest.raises(APIError):
+        OpenAIAdapter(api_key="k").complete(messages=[{"role": "user", "content": "hi"}])
+    assert route.call_count == 3
