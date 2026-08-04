@@ -1,9 +1,8 @@
 """Feishu JSON chat format parser."""
 
-import json
 from datetime import datetime, timezone
 
-from .base import ParseError, ParsedMessage
+from .base import ParseError, ParsedMessage, _load_message_objects
 
 
 class FeishuJsonParser:
@@ -13,42 +12,23 @@ class FeishuJsonParser:
         return "feishu"
 
     def parse(self, raw: bytes) -> list[ParsedMessage]:
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise ParseError(f"invalid JSON: {e}") from e
-
-        if not isinstance(data, dict):
-            raise ParseError("invalid payload: expected JSON object")
-
-        messages = data.get("messages")
-        if not isinstance(messages, list):
-            raise ParseError("missing 'messages' field")
-
-        if not messages:
-            raise ParseError("empty messages")
-
+        messages = _load_message_objects(raw)
         result: list[ParsedMessage] = []
         for m in messages:
-            if not isinstance(m, dict):
-                raise ParseError("invalid message entry")
-
+            ts_raw = m.get("create_time")
             try:
-                ts = datetime.fromtimestamp(int(m["create_time"]), tz=timezone.utc)
-            except KeyError as e:
-                raise ParseError(f"missing create_time: {e}") from e
+                ts_int = int(ts_raw)
             except (TypeError, ValueError) as e:
                 raise ParseError(f"bad create_time: {e}") from e
+            if ts_int < 0:
+                raise ParseError(f"create_time out of range: {ts_int}")
+            ts = datetime.fromtimestamp(ts_int, tz=timezone.utc)
 
             sender_obj = m.get("sender")
             if not isinstance(sender_obj, dict):
-                raise ParseError("invalid sender: expected object")
+                raise ParseError("bad sender: expected object")
             try:
                 sender = sender_obj["name"]
-            except KeyError as e:
-                raise ParseError(f"missing sender.name: {e}") from e
-
-            try:
                 content = m["body"]
                 msg_id = m["message_id"]
             except KeyError as e:

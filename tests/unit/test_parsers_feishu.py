@@ -26,3 +26,21 @@ def test_feishu_malformed():
     parser = FeishuJsonParser()
     with pytest.raises(ParseError):
         parser.parse(b'not json')
+
+
+def test_feishu_missing_sender():
+    parser = FeishuJsonParser()
+    with pytest.raises(ParseError, match="sender"):
+        parser.parse(b'{"messages": [{"body": "x", "create_time": "1735431600", "message_id": "m1"}]}')
+
+
+def test_feishu_missing_create_time():
+    parser = FeishuJsonParser()
+    with pytest.raises(ParseError, match="create_time"):
+        parser.parse(b'{"messages": [{"sender": {"name": "x"}, "body": "y", "message_id": "m1"}]}')
+
+
+def test_feishu_negative_create_time():
+    parser = FeishuJsonParser()
+    with pytest.raises(ParseError, match="out of range"):
+        parser.parse(b'{"messages": [{"sender": {"name": "x"}, "body": "y", "create_time": "-1", "message_id": "m1"}]}')
