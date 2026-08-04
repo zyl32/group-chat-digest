@@ -29,6 +29,9 @@ _SYSTEM_PROMPT = (
     '{"todos":[{"who","what","due_at","source_msg_id"}]}'
 )
 
+_MAX_FALLBACK_TODOS = 200
+_MAX_DIGEST_BLOCKS_IN_PROMPT = 20
+
 
 def _msg_content(m: object) -> str:
     """Extract message content from dict / ParsedMessage / fallback str."""
@@ -88,6 +91,13 @@ class TodoExtractor:
 
         if not items:
             # Fallback: one "待确认" todo per message so users can triage.
+            # Cap cardinality so a single bad LLM call can't flood the table.
+            truncated = list(messages)[:_MAX_FALLBACK_TODOS]
+            if len(truncated) < len(messages):
+                logger.warning(
+                    "fallback truncated %d->%d messages for upload_id=%s",
+                    len(messages), len(truncated), upload_id,
+                )
             todos = [
                 Todo(
                     upload_id=upload_id,
@@ -96,7 +106,7 @@ class TodoExtractor:
                     source_msg_id=i,
                     state="pending",
                 )
-                for i, m in enumerate(messages)
+                for i, m in enumerate(truncated)
             ]
         else:
             todos = []
@@ -120,8 +130,7 @@ class TodoExtractor:
                         state="pending",
                     )
                 )
-        for t in todos:
-            self._session.add(t)
+        self._session.add_all(todos)
         self._session.flush()  # populate ids without committing caller's txn
         return todos
 
@@ -131,11 +140,19 @@ class TodoExtractor:
         digest_blocks: Sequence,
     ) -> list[LLMMessage]:
         """Format messages + digest topics into a system+user prompt."""
+        # TODO(security): wrap user content in delimiters so the LLM treats it
+        # as data, not instructions. Prompt injection is a known v1 risk.
         joined = "\n".join(_msg_content(m) for m in messages)
         block_summary = ""
         if digest_blocks:
+            truncated_blocks = list(digest_blocks)[:_MAX_DIGEST_BLOCKS_IN_PROMPT]
+            if len(truncated_blocks) < len(digest_blocks):
+                logger.warning(
+                    "digest blocks truncated %d->%d for prompt",
+                    len(digest_blocks), len(truncated_blocks),
+                )
             lines = []
-            for b in digest_blocks:
+            for b in truncated_blocks:
                 if isinstance(b, dict):
                     lines.append(
                         f"- {b.get('topic', '?')}: {b.get('summary', '')}"

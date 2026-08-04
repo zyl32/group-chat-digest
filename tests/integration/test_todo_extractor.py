@@ -106,3 +106,41 @@ def test_extract_persists_to_session(in_memory_db, mock_llm: MockLLMAdapter) -> 
     queried = in_memory_db.query(Todo).filter_by(upload_id="u-persist").all()
     assert len(queried) == 1
     assert queried[0].id == todos[0].id
+
+
+def test_extract_digest_blocks_reach_llm(in_memory_db, mock_llm: MockLLMAdapter) -> None:
+    """Digest topics must be incorporated into the LLM prompt's user content."""
+    # Mock matches on substring in the joined prompt text. We key the response
+    # on a topic name that ONLY appears via digest_blocks (messages are empty),
+    # so a match proves digest context reached the LLM.
+    mock_llm.set_response("Quarterly Review", json.dumps({
+        "todos": [
+            {"who": "李四", "what": "review quarterly", "due_at": None, "source_msg_id": 0}
+        ]
+    }))
+    svc = TodoExtractor(llm=mock_llm, session=in_memory_db)
+    todos = svc.extract(
+        upload_id="u-digest",
+        messages=[],
+        digest_blocks=[{"topic": "Quarterly Review", "summary": "讨论 Q3"}],
+    )
+
+    assert len(todos) == 1
+    assert todos[0].what == "review quarterly"
+
+
+def test_extract_fallback_caps_messages(in_memory_db, mock_llm: MockLLMAdapter) -> None:
+    """Fallback path caps todo creation to _MAX_FALLBACK_TODOS messages."""
+    mock_llm.set_response("extract", "not json")
+    svc = TodoExtractor(llm=mock_llm, session=in_memory_db)
+    many_msgs = [
+        ParsedMessage(
+            sender="x",
+            content=f"msg {i}",
+            timestamp=datetime(2026, 8, 5, 10, 0, 0),
+            msg_id=f"m{i}",
+        )
+        for i in range(500)
+    ]
+    todos = svc.extract(upload_id="u-cap", messages=many_msgs, digest_blocks=[])
+    assert len(todos) == 200  # capped
