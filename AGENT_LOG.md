@@ -289,3 +289,85 @@
 - `ac5d1ed` fix(models): replace deprecated datetime.utcnow with timezone-aware now, type hint get_session
 
 ---
+
+## [2026-08-05] Task T5: 测试 fixtures（conftest）
+
+**所在 worktree**：`wt-foundation`（分支 `worktree-wt-foundation`）— 本 worktree 最后一个 task
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T5 完整 TDD — 创建 `tests/conftest.py`（in_memory_db + client fixture）与 `tests/unit/test_conftest.py`
+- 关键约束：
+  1. PLAN 自我修订：mock_llm fixture 推迟到 T11，T5 只实现 in_memory_db + client
+  2. PLAN 的 `client` fixture 中 `app.dependency_overrides[...] = lambda: in_memory_db` 是不完整 placeholder（T14 才有真 dep）—— 选 Option A：`yield TestClient(app)` minimal scaffolding + 注释 T14 扩展
+  3. `in_memory_db` 用 clean `sessionmaker(bind=engine)()` 而非 PLAN 的 `get_session(engine).__enter__()` hack（避免 contextmanager 滥用）
+  4. 加 `engine.dispose()` 修 T4 reviewer 提的 Low-severity ResourceWarning
+  5. `datetime.now(timezone.utc)` 而非 `utcnow()`（T4 fix precedent）
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`c546cd7` "test: add shared fixtures (in_memory_db, client)"
+- 8 项测试全过（7 prior + 1 new）
+- Self-review 6 项检查全过：fixture 可用、无 ResourceWarning、未实现 mock_llm、client minimal、无未用 import、clean sessionmaker
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 验证方式：独立 `git show c546cd7 -- <file>` 读两文件，9 项 spec 逐条对
+- 结论：✅ Spec compliant
+  - 2 个文件存在
+  - `in_memory_db` 用 `sqlite://` + `Base.metadata.create_all` + session.close + engine.dispose
+  - `mock_llm` 未实现（推 T11）✅
+  - 测试数 = 1（无额外）✅
+  - 3 个 disclosed deviations（sessionmaker / dispose / Option A client）全在 leniency 内
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with one fix**
+- Strengths：
+  - Teardown 顺序正确（session.close → engine.dispose，pytest 保证 post-yield 即使测试失败也跑）
+  - 每个 test 独立 engine（function scope，schema 干净）
+  - `datetime.now(timezone.utc)` 合规
+  - `client` fixture 选 Option A 诚实——PLAN 的 `dependency_overrides[...]` 指向尚不存在的依赖，不实现是对的
+  - Import hygiene 干净（stdlib→third-party→local）
+  - T4 reviewer 提的 Digest/Setting/UniqueConstraint 测试 — `test_models.py` 已部分覆盖，无需在 conftest 重复
+- Important issues：
+  - **HIGH #1**：fixture 函数缺类型注解，违反 coding-style.md "all functions must have type hints"。修复：`in_memory_db() -> Iterator[Session]`、`client() -> Iterator[TestClient]`，import `Iterator` from typing
+- Minor issues（不阻断）：
+  - LOW #2：teardown 缺 `try/finally` 包裹 — `session.close()` 实际不会抛，纯防御性，跳过
+  - LOW #3：`client` fixture 无 smoke test — 加一行 `def test_client_healthz(client): client.get("/healthz")` 闭环 scaffolding，廉价
+  - LOW #4：`test_in_memory_db_fixture` 显式设 `received_at` — 可省略以同时测模型 default，但当前测试目标是 fixture 而非 model default，不动
+
+**派发 fix implementer**：
+- 模型：haiku（机械添加类型注解 + 一行 smoke test）
+- 修复 1：`tests/conftest.py` 加 `from typing import Iterator`，`Session` from sqlalchemy.orm 已有；两 fixture 加返回类型
+- 修复 2：`tests/unit/test_conftest.py` 追加 `test_client_healthz(client)`，验证 `/healthz` 返回 200 + `{"status": "ok"}`
+- Commit：`fb02ea8` "fix(tests): add type hints to fixtures, add client fixture smoke test"
+- 验证：9 passed（8 prior + 1 new client smoke）
+
+**人工干预**：
+- 编排器跑 `uv run pytest -v` 验证：9 passed，唯一警告是 Starlette 上游 TestClient 弃用（T1 已知）
+- 跳过完整 re-review：fix 是机械添加（类型注解 + 1 行测试），implementer 自报 + 编排器跑测试 + 直接读 diff 三重验证足够
+
+**学到的教训**：
+1. **Fixture 也是函数**：coding-style.md "all functions must have type hints" 字面包含 fixture。pytest fixture 风格上常省略类型，但项目规则严格要求 — fixture 返回 `Iterator[T]`（yield-only 模式），不用 `Generator[T, None, None]`（更复杂）。
+2. **PLAN.md 自我修订是好实践**：T5 spec 在 PLAN 内部就明确写了"mock_llm 推到 T11"，避免了 implementer 在 spec 与 reviewer 之间纠结。教训：写 PLAN 时若发现 task 之间有依赖错位（fixture 依赖尚未实现的 adapter），及时在 PLAN 内做修订注记，比让 implementer 现场判断更稳。
+3. **Scaffolding fixture 要有 smoke test**：`client` fixture 看似 trivial（一行 yield），但加一个 `test_client_healthz` 把 scaffolding 闭环 — 后续 T14 改 fixture 时，这个 smoke test 会立即告诉你是否打破了基础契约。教训：任何 scaffolding code 至少配一个最简 smoke test。
+4. **`get_session(engine).__enter__()` 是 hack**：contextmanager 不应该这样手动 `__enter__()`。Clean 替代是直接 `sessionmaker(bind=engine)()`。教训：PLAN.md 里的 sample code 偶尔会有 hack 写法，implementer 应当识别并改进，而不是机械复制。
+5. **wt-foundation 全程总结**：T1→T5 五个 task 在同一 worktree 内完成，分支 `worktree-wt-foundation` 共 12 个 commit。所有改动隔离干净，main 分支从未被污染。下一步用 `superpowers:finishing-a-development-branch` 合并到 main，然后开 wt-parsers-llm worktree 做 T6-T12。
+
+**T5 完成 commit 链**：
+- `c546cd7` test: add shared fixtures (in_memory_db, client)
+- `fb02ea8` fix(tests): add type hints to fixtures, add client fixture smoke test
+
+**wt-foundation 全部 commit（T1-T5）**：
+- T1: `d172bcf` + `bba7b04` + `d7bb815` (agent-log)
+- T2: `af04fc9` + `7a5e18f`
+- T3: `f3d753e` + `89a9832` + `b005c04` (agent-log)
+- T4: `7347232` + `ac5d1ed` + `4ffed62` (agent-log)
+- T5: `c546cd7` + `fb02ea8`
+
+---
