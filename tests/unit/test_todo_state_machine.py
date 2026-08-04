@@ -36,3 +36,15 @@ def test_ignored_to_done_rejected(sm):
 def test_unknown_action(sm):
     with pytest.raises(IllegalTransition):
         sm.transition("pending", "bogus")
+
+
+def test_done_to_done_rejected(sm):
+    with pytest.raises(IllegalTransition):
+        sm.transition("done", "done")
+
+
+def test_illegal_transition_attributes(sm):
+    with pytest.raises(IllegalTransition) as exc_info:
+        sm.transition("done", "reactivate")
+    assert exc_info.value.frm == "done"
+    assert exc_info.value.action == "reactivate"

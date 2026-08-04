@@ -1,5 +1,8 @@
 """Pure-logic todo state machine with explicit transitions."""
 
+from types import MappingProxyType
+from typing import Final, Mapping
+
 __all__ = ["TodoStateMachine", "IllegalTransition"]
 
 
@@ -10,12 +13,12 @@ class IllegalTransition(Exception):
         self.action = action
 
 
-_TRANSITIONS: dict[tuple[str, str], str] = {
+_TRANSITIONS: Final[Mapping[tuple[str, str], str]] = MappingProxyType({
     ("pending", "done"): "done",
     ("pending", "ignored"): "ignored",
     ("pending", "snoozed"): "snoozed",
     ("snoozed", "reactivate"): "pending",
-}
+})
 
 
 class TodoStateMachine:
