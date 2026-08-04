@@ -448,3 +448,79 @@
 - `a6bd556` fix(parsers): tighten PARSERS type hint, modernize test style to pytest.raises
 
 ---
+
+## [2026-08-05] Task T7: Feishu JSON Parser
+
+**所在 worktree**：`wt-parsers-llm`（分支 `worktree-wt-parsers-llm`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T7 完整 TDD — FeishuJsonParser + 注册到 PARSERS + 3 个测试（normal + 2 error-path，沿用 T6 lesson）
+- 关键约束：
+  1. Feishu 时间戳是 unix 秒字符串，必须用 `datetime.fromtimestamp(int(...), tz=timezone.utc)`
+  2. sender 是嵌套对象 `m["sender"]["name"]`（非平铺）
+  3. content 字段名是 `body`，msg_id 字段名是 `message_id`（与 WeChat 不同）
+  4. 沿用 T6 lessons：`pytest.raises`、`Path(__file__).resolve()`、defensive isinstance、不 stage `uv.lock` diff
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`8682996` "feat: add Feishu JSON parser"
+- 15 项测试全过（12 prior + 3 new）
+- 主动应用 T6 lessons：FIXTURES 常量、pytest.raises、defensive isinstance、PARSERS 类型已收紧
+- 主动加 2 个 error-path 测试（empty + malformed）— 提前锁定 contract
+- `uv.lock` 正确未 stage
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 11 项 spec 逐条对：name() returns "feishu" ✅；timestamp 用 `tz=timezone.utc` ✅；sender 嵌套访问 ✅；content 从 `m["body"]` ✅；msg_id 从 `m["message_id"]` ✅；4 个 error path ✅；PARSERS 2 entries ✅；`__all__` 含 FeishuJsonParser ✅；fixture 1 message 字段正确 ✅
+- Minor observations：sender dict 检查（authorized）；style nit on error-grouping
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with one fix**（实为 2 项）
+- Strengths：类型注解完整、UTC 处理正确、isinstance 防御合理、test 沿用 T6 lessons、`__init__.py` 注册正确
+- Important issues：
+  - **HIGH #1**：`int(m["create_time"])` 在 float-字符串（`"1735431600.5"`）抛 ValueError，但在 JSON number float（`1735431600.5`）静默截断 — 行为不一致。Fix：显式 `int()` + 负值校验 + `int(None)` 经 TypeError 转 ParseError
+  - **MEDIUM #2**：wechat_json.py 与 feishu_json.py 的 JSON loading + root-object + messages-list + empty + per-entry-isinstance preamble 18 行重复。YAGNI threshold（3+ parsers）"arguably already met"。Extract `_load_message_objects(raw) -> list[dict]` 到 `base.py`
+- Minor issues（不阻断）：
+  - LOW #3：fixture 仅 1 message — 可加 2-3 测多消息排序
+  - LOW #4：缺 missing-field 测试（missing sender/body/create_time，non-dict sender）— 各 isinstance/KeyError 分支未被测试覆盖
+  - LOW #5：`body`/`message_id` 未 type-check — 若是 null/number 会传非 str 给 ParsedMessage；与 WeChat 行为一致，acceptable
+  - LOW #6：timestamp `1735431600` = 2024-12-29 09:00 UTC，合理近期日期
+
+**派发 fix implementer**：
+- 模型：sonnet（涉及多文件重构 + helper 抽取 + 新测试）
+- 修复 1（HIGH）：feishu_json.py create_time 改为 `m.get(...)` → `int(ts_raw)` 显式 try/except + 负值校验 + `int(None)` 经 TypeError 转 ParseError
+- 修复 2（MEDIUM）：
+  - `base.py` 新增 `_load_message_objects(raw: bytes) -> list[dict]` helper，集中 JSON loading + 结构 validation，加入 `__all__`
+  - `wechat_json.py` 重构：移除本地 `import json`，用 helper，合并 KeyError 分支
+  - `feishu_json.py` 重构：移除本地 `import json`，用 helper，保留 Fix 1 的 create_time 校验
+- 修复 3（LOW）：test_parsers_feishu.py 加 3 个 missing-field 测试：
+  - `test_feishu_missing_sender` (match "sender")
+  - `test_feishu_missing_create_time` (match "create_time")
+  - `test_feishu_negative_create_time` (match "out of range")
+- Commit：`ba384e9` "fix(parsers): extract _load_message_objects helper, harden create_time validation, add missing-field tests"
+- 验证：18 passed（15 prior + 3 new），WeChat 重构后 3 测试全过，无回归
+
+**人工干预**：
+- 编排器跑 `uv run pytest -v` 验证：18 passed
+- 跳过完整 re-review：fix 涉及 4 文件 + helper 抽取，但 implementer 自报 + 编排器跑测试 + 测试覆盖足够
+- LOW fixture 多消息推迟 — 当前 1 message 已覆盖核心路径
+
+**学到的教训**：
+1. **Helper extraction 时机判断**：reviewer 说"YAGNI threshold 3+ arguably already met" — 但 T8 PlainText 不用 JSON loading，所以实际只有 2 个 JSON parser 受益。我选择抽取是因为 18 行 preamble 重复在 wechat+feishu 各出现一次，抽取后两文件都更干净，且 base.py 仅有 15 行 helper 增量。教训：YAGNI 阈值不是绝对，看重复代码的"密度"和"未来 task 是否会用到"。
+2. **类型强制的不一致性**：`int("123.5")` 抛 `ValueError`，但 `int(123.5)` 静默截断 — Python 的隐式转换不对称。在 I/O 边界处理混合类型输入时，必须显式 `try int(...) except (TypeError, ValueError)`。教训：never trust JSON 字段类型，永远是 string/number/null 三种可能。
+3. **测试覆盖 isinstance/KeyError 分支**：T6 没测 missing sender/missing content，T7 reviewer 抓到。每个 error-path branch 至少配一个测试，否则 reviewer 会要求补。教训：写代码时数一下 if/except 分支数，每个分支配一个测试。
+4. **defensive isinstance 在 nested 对象上更重要**：`m["sender"]` 可能是 string/null/dict，`m["sender"]["name"]` 在 string/null 上会抛 TypeError 而非 KeyError。`isinstance(sender_obj, dict)` 前置检查把 TypeError 转为清晰的 ParseError("bad sender")。教训：嵌套访问前先 type-guard。
+5. **`__all__` 在 regular module 也值得加**：coding-style.md 只要求 `__init__.py` 有 `__all__`，但 base.py 作为公共 helper 模块加 `__all__` 让 public API 显式（`_load_message_objects` 也在内，明示是 package-internal helper）。教训：helper 模块加 `__all__` 区分 public 与 internal。
+
+**T7 完成 commit 链**：
+- `8682996` feat: add Feishu JSON parser
+- `ba384e9` fix(parsers): extract _load_message_objects helper, harden create_time validation, add missing-field tests
+
+---
