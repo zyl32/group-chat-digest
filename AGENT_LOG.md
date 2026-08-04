@@ -889,3 +889,81 @@
 - T12: `b0ea224` + `16edaf7` + (本 agent-log entry)
 
 ---
+
+## [2026-08-05] Task T13: Credential Vault（Protocol + OS Keyring + InMemory）
+
+**所在 worktree**：`wt-services-routers`（分支 `worktree-wt-services-routers`）— 本 worktree 第一个 task
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T13 完整 TDD — `CredentialVault` Protocol + `InMemoryVault` + `OSKeyringVault` + 6 个测试（3 PLAN + 3 edge case）
+- 关键约束：
+  1. coding-style.md 强制 type hints（PLAN spec 字面省略）
+  2. `@runtime_checkable` Protocol（T11 `LLMProvider` pattern 重用，T19 router 用 `isinstance` dispatch）
+  3. 禁止裸 `except Exception`（coding-style.md）— `clear()` 必须捕获具体异常
+  4. `__all__` 必须定义
+  5. 与 T6/T9/T11 lessons 一致：edge case 测试 + `Final` 类型 + Protocol 类型 registry
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`686cdcf` "feat: add CredentialVault with InMemory and OS keyring backends"
+- 60 项测试全过（54 prior + 6 new）
+- 实现：87 行 `credential_vault.py` + 71 行 test
+- 3 项 disclosed deviations：
+  1. 全方法加 type hints（PLAN spec 字面省略）— coding-style.md 强制
+  2. `@runtime_checkable` Protocol — T11 pattern，T19 router isinstance dispatch
+  3. `clear()` 捕获 `(KeyringError, KeyError)` 而非裸 `except Exception` — coding-style.md 禁止 bare except；`KeyError` 覆盖某些 backend 不继承 `PasswordDeleteError` 的情况
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 9 项 spec 逐条对：2 文件 ✅；3 符号导出 ✅；4 方法 Protocol ✅；`OSKeyringVault.__init__` 默认 `service="group-chat-digest"` ✅；`status()` 仅返回 `{"configured": bool}` 不含明文 ✅；`clear()` 幂等 ✅；3 PLAN 测试 + 3 edge case 全通过 ✅；无额外文件提交（`uv.lock`/`.claude/` 排除）✅
+- 6 项 disclosed deviations 全部接受（coding-style / T11 pattern / T11 lessons）
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with fixes**
+- Strengths：`@runtime_checkable` 正确；`status()` 不暴露明文或 length/timing 信号；`clear()` 幂等；`__all__` + type hints 齐；文件 87 行；测试覆盖 happy path + idempotent clear + mock keyring + runtime-checkable Protocol + plaintext-leak 断言
+- **Critical issues**：无 — 无明文泄漏路径；`load()` 不日志；`status()` 不返回值；`repr(vault)` 是默认 object repr（safe）
+- Important issues：
+  - **#1**：`InMemoryVault` docstring 太软（"intended for tests and local development"）— 应明确警告 "NOT for production; secrets exposed via core dumps / swap / debugger"
+  - **#2**：`service="group-chat-digest"` 是硬编码 magic string — 应 hoist 为 `_DEFAULT_SERVICE: Final[str]`
+  - **#3**：`OSKeyringVault` docstring 应说明 `load()` 返回明文 `str`，caller 负责及时清除引用、避免日志
+  - **#4**：`OSKeyringVault.status` 调用 `get_password` 仅为存在性检查 — 会将明文临时载入 Python 内存（side-channel 风险），应加注释提醒勿在热路径调用
+  - **#5**：缺 `test_os_keyring_load_missing` 测试（key 不存在时 `load()` 返回 None）
+- Minor issues（不阻断）：
+  - LOW #6：`"secret" not in str(result)` 测试弱（但当前 `status` 返回 shape 正确，可接受）
+  - LOW #7：`self.service = service` 应 `Final` 化或文档化不可变
+
+**派发 fix implementer**：
+- 模型：编排器直接执行（机械修改，T8 precedent — <10 行机械修改不分派 subagent）
+- 修复 1：`InMemoryVault` docstring 加 WARNING 段落
+- 修复 2：模块顶加 `_DEFAULT_SERVICE: Final[str] = "group-chat-digest"`，`OSKeyringVault.__init__(service: str = _DEFAULT_SERVICE)`
+- 修复 3：`OSKeyringVault` docstring 加 `load()` 返回明文 + caller 责任
+- 修复 4：`status()` 加注释说明会 fetch 明文，勿在热路径调用
+- 修复 5：加 `test_os_keyring_load_missing` 测试
+- 跳过：Minor #6/7（YAGNI，当前测试已覆盖行为意图）
+- Commit：`071001b` "fix(credential-vault): harden docstrings, hoist _DEFAULT_SERVICE constant, add load_missing test"
+- 验证：7 passed（6 prior + 1 new）
+
+**人工干预**：
+- 编排器跑 `uv run pytest tests/unit/test_credential_vault.py -v`：7 passed
+- 编排器直接 Read 验证 docstring / `Final` / 新测试均已应用
+- 跳过完整 re-review：fix 范围是 4 处 docstring/注释 + 1 个常量 hoist + 1 个测试添加，机械修改三重验证足够
+
+**学到的教训**：
+1. **安全模块的 docstring 是契约**：`InMemoryVault` 原 docstring "intended for tests and local development" 太软 — operator 可能误读为"开发环境也可用"。修复后明确警告 core dump / swap / debugger 暴露风险，强制推荐 `OSKeyringVault`。教训：安全敏感模块的 docstring 应包含显式 WARNING 段落，列出具体威胁向量（不是泛泛说"不安全"）。
+2. **`status()` 的 side-channel 风险**：`OSKeyringVault.status` 为存在性检查调用 `get_password`，会将明文临时载入 Python 内存。虽然返回值不含明文，但内存中短暂存在。修复方式：加注释提醒勿在热路径调用，长期可考虑 `keyring.get_credential(service, username).username` 风格的 non-secret probe（但非标准）。教训：安全模块不仅要看返回值，还要看内部行为对内存/日志/timing 的影响。
+3. **`_DEFAULT_SERVICE: Final[str]` 常量提取**：与 T4 `_new_uuid` 函数提取同模式 — 模块级 magic string 应 hoist 为 `Final` 常量，便于单点修改 + 类型锁定。教训：coding-style.md "no hardcoded hyperparameters" 字面包含 service name 这类"配置常量"，不仅是"超参数"。
+4. **机械 fix 可由编排器直接执行**：T8 已确立 precedent — <10 行机械修改（docstring/注释/常量提取/单测试添加）不分派 fix subagent，编排器直接 Edit + 跑测试 + commit。教训：subagent 分派有 overhead（prompt 构造 + 模型启动），机械任务用 orchestrator 直接 edit 更快，且编排器对 fix 范围有完全控制。
+5. **T13 提前完成了"安全存储"硬性约束**：§3.1 要求"至少实现一种安全存储（OS keychain / KMS / master-password encrypted file）"。`OSKeyringVault` 满足，`InMemoryVault` 是 test backend。T19 凭据 router 会用这两个 backend 实现"查看/更新/清除（不回显明文）"行为。教训：安全约束要在架构层就规划好 Protocol + 多 backend，让后续 router 层只需 dispatch 不需重写安全逻辑。
+
+**T13 完成 commit 链**：
+- `686cdcf` feat: add CredentialVault with InMemory and OS keyring backends
+- `071001b` fix(credential-vault): harden docstrings, hoist _DEFAULT_SERVICE constant, add load_missing test
+
+---
