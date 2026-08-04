@@ -78,5 +78,69 @@
 **T1 完成 commit 链**：
 - `d172bcf` feat: bootstrap FastAPI app with healthz endpoint and uv project
 - `bba7b04` fix: remove deprecated [tool.uv] block and document Makefile build target
+- `d7bb815` docs(agent-log): T1 entry with full process evidence
+
+---
+
+## [2026-08-05] Task T2: CI 骨架（GitHub Actions unit-test job）
+
+**所在 worktree**：`wt-foundation`（分支 `worktree-wt-foundation`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：创建 `.github/workflows/ci.yml`，含 unit-test + docker-build + deploy stub 三个 job
+- 关键约束：unit-test 名字硬性要求（§五-6）
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`af04fc9` "ci: add unit-test, docker-build, and deploy stub jobs"
+- self-review 抓到一个 critical bug：deploy stub 初始用 `exit 1` 会失败 CI（违反 §五-7），自改成 `echo`
+- 注意：`uv.lock` 有 unrelated 修改，正确地未 stage
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 验证：YAML 语法、action 版本、job 名、依赖链、触发条件全部符合
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **No, needs fixes**
+- Critical #1：`docker-build` job 在 T23（Dockerfile）前注定失败，违反 §五-7。建议整个 docker-build job 删掉，T23 时再加回。
+- Critical #2：smoke test grep 模式太宽松 `"ok"` 应改为 `{"status":"ok"}`
+- Important #3：缺 `concurrency` 控制块
+- Important #4：`setup-python` 与 `setup-uv` 重复
+- Important #5：缺 `permissions` 块（最小权限）
+- Important #6：smoke test 用固定 `sleep 5` 脆弱
+- Important #7：缺 `timeout-minutes`
+- Minor #8-11：uv 版本固定、缓存、artifact 名、pytest maxfail
+
+**派发 fix implementer**：
+- 模型：sonnet（修复涉及多个 yaml 结构调整）
+- 关键决策：整个 docker-build 与 deploy job 都删掉（T23/T24 再加回），而不是用 `continue-on-error` 掩盖——避免后续真实故障被掩盖
+- 修复 1：删除 docker-build 与 deploy job（只留 unit-test）
+- 修复 2：顶层加 `concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }`
+- 修复 3：删除 `actions/setup-python` 步骤，把 `python-version: "3.12"` 并入 `setup-uv`
+- 修复 4：顶层加 `permissions: { contents: read }`
+- 修复 5：unit-test job 加 `timeout-minutes: 10`
+- 修复 6：setup-uv 加 `enable-cache: true` + `cache-dependency-glob: "uv.lock"`
+- Commit：`7a5e18f` "fix(ci): remove docker-build/deploy stubs, add concurrency/permissions/timeout/cache"
+
+**人工干预**：
+- 编排器读最终 ci.yml 验证：38 行干净 YAML，仅 unit-test job，所有 6 项 fix 可见
+- 跳过完整 re-review：fix 范围是机械删除 + 标准 yaml 块添加，编排器直接 Read 文件验证足够
+
+**学到的教训**：
+1. PLAN.md T2 写"docker-build job 在 T2 就建好"，但 Dockerfile 要到 T23 才有——这是 PLAN.md 的逻辑错误。教训：写 PLAN 时，CI job 与它依赖的产物要在同一 task 或之后才加，不能提前。Backport 修复到 PLAN.md 应该把 docker-build 移到 T23。
+2. Subagent self-review 抓到 deploy stub `exit 1` bug 很有价值——subagent 主动报告 critical bug 比让 reviewer 抓更省一轮。
+3. Code quality reviewer 提的 Minor 问题（uv 版本固定、artifact 名、pytest maxfail）我选择不修——工程量与价值不匹配，YAGNI。等 T24 真部署时再优化。
+4. PyYAML 把 `on:` 解析为布尔键 `True` 是已知问题，GitHub Actions 实际能正确处理。但如果以后要用 `yq` 或其他工具解析，要注意。
+
+**T2 完成 commit 链**：
+- `af04fc9` ci: add unit-test, docker-build, and deploy stub jobs
+- `7a5e18f` fix(ci): remove docker-build/deploy stubs, add concurrency/permissions/timeout/cache
 
 ---
