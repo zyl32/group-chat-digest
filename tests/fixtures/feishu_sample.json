@@ -1,0 +1,7 @@
+{
+  "app": "feishu",
+  "chat_id": "oc_xxx",
+  "messages": [
+    {"sender": {"id": "u1", "name": "王五"}, "body": "今天开会", "create_time": "1735431600", "message_id": "fm1"}
+  ]
+}
