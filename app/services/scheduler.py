@@ -17,10 +17,9 @@ class Scheduler:
     """
 
     def __init__(self) -> None:
-        self._queue: Deque[Callable[[], Awaitable]] = deque()
-        self._workers: list = []
+        self._queue: Deque[Callable[[], Awaitable[None]]] = deque()
 
-    def enqueue(self, coro_factory: Callable[[], Awaitable]) -> None:
+    def enqueue(self, coro_factory: Callable[[], Awaitable[None]]) -> None:
         """Append a coroutine factory to the queue."""
         self._queue.append(coro_factory)
 

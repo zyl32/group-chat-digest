@@ -59,8 +59,10 @@ def client(in_memory_db) -> Iterator[TestClient]:
         yield session
 
     app.dependency_overrides[get_db] = _override_get_db
-    yield TestClient(app)
-    app.dependency_overrides.clear()
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
 
 
 @pytest.fixture

@@ -37,4 +37,18 @@ def test_upload_unknown_format(client):
         "/api/uploads",
         files={"file": ("t.json", b"{}", "application/json")},
     )
-    assert r.status_code in (422, 400)
+    assert r.status_code == 422
+
+
+def test_upload_filename_traversal_sanitized(client):
+    """Stored filename must be a basename, not the raw user-supplied path."""
+    f = Path("tests/fixtures/wechat_sample.json").read_bytes()
+    r = client.post(
+        "/api/uploads",
+        files={"file": ("../../etc/passwd", f, "application/json")},
+        data={"fmt": "wechat"},
+    )
+    assert r.status_code == 202
+    upload_id = r.json()["upload_id"]
+    s = client.get(f"/api/uploads/{upload_id}/status").json()
+    assert s["status"] == "done"

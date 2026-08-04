@@ -9,6 +9,8 @@ which raises ``ParseError("unknown format: None")`` → 422, satisfying
 ``test_upload_unknown_format``.
 """
 
+import logging
+import os
 import uuid
 from typing import Iterator, Optional
 
@@ -22,13 +24,23 @@ from app.models.message import Message
 from app.models.upload import Upload
 from app.services.parser_service import parse_upload
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/uploads")
 cfg: AppConfig = load_config()
+
+_MAX_FILENAME_LEN = 255
+
+
+def _sanitize_filename(name: str | None) -> str:
+    """Strip directory traversal / NUL bytes; return a safe basename."""
+    cleaned = os.path.basename(name or "")[:_MAX_FILENAME_LEN]
+    return cleaned or "upload.bin"
 
 
 def get_db() -> Iterator[Session]:
     """Production DB dependency. Tests override via ``app.dependency_overrides``."""
     engine = get_engine(cfg.db.url)
+    # TODO(T17): move schema creation to app startup; per-request create_all is wasteful.
     Base.metadata.create_all(engine)
     with get_session(engine) as session:
         yield session
@@ -45,19 +57,29 @@ async def create_upload(
     Returns ``{"upload_id": ..., "status": "done"}`` on success. Errors:
     413 (too large), 422 (unknown format / parse failure).
     """
-    raw = await file.read()
-    if len(raw) > cfg.upload.max_size_mb * 1024 * 1024:
-        raise HTTPException(413, "file too large")
+    max_bytes = cfg.upload.max_size_mb * 1024 * 1024
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(1 << 20):
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(413, "file too large")
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+
     upload_id = str(uuid.uuid4())
+    safe_filename = _sanitize_filename(file.filename)
+    fmt_norm = (fmt or "").lower()
     # Synchronous parse (T17 will switch to scheduler async).
     try:
-        msgs = parse_upload(raw, fmt or "")
+        msgs = parse_upload(raw, fmt_norm)
     except ParseError as e:
-        raise HTTPException(422, str(e)) from e
+        logger.warning("parse failed: %s", e)
+        raise HTTPException(422, "unsupported or malformed chat export") from e
     u = Upload(
         id=upload_id,
-        filename=file.filename,
-        fmt=fmt or "",
+        filename=safe_filename,
+        fmt=fmt_norm,
         size=len(raw),
         status="done",
     )
