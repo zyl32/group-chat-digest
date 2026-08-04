@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from app.services.export import export_ics
 
 
@@ -53,3 +55,20 @@ def test_ics_escapes_special_chars():
     assert "\\;" in text   # escaped semicolon
     assert "\\," in text   # escaped comma
     assert "\\n" in text   # escaped newline (literal)
+
+
+def test_ics_non_utc_timezone_normalizes_to_utc():
+    """Non-UTC tz-aware datetime is converted to UTC before formatting."""
+    from zoneinfo import ZoneInfo
+    todos = [{"who": None, "what": "x",
+              "due_at": datetime(2026, 8, 10, 1, 0, tzinfo=ZoneInfo("America/New_York"))}]
+    out = export_ics(todos).decode("utf-8")
+    # 01:00 EDT (UTC-4 in August) == 05:00 UTC
+    assert "DTSTART:20260810T050000Z" in out
+
+
+def test_ics_naive_datetime_raises():
+    """Naive datetime (no tzinfo) raises ValueError, not silent wrong output."""
+    todos = [{"who": None, "what": "x", "due_at": datetime(2026, 8, 10, 9, 0)}]
+    with pytest.raises(ValueError, match="tz-aware"):
+        export_ics(todos)
