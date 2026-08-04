@@ -13,6 +13,7 @@ dataclass schema, giving us type-safe config without additional plumbing.
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from omegaconf import DictConfig, OmegaConf
@@ -65,8 +66,18 @@ def load_config(overrides: Optional[list[str]] = None) -> DictConfig:
         :class:`AppConfig` and supports attribute access.
     """
     defaults = OmegaConf.structured(AppConfig)
-    cfg = OmegaConf.create(OmegaConf.to_container(defaults, resolve=True))
+    # Workaround: frozen dataclass → OmegaConf.structured → readonly nodes.
+    # Materialize to dict then re-create as mutable to allow merge.
+    # TODO(T11/T12): re-enable structured validation when LLM provider integration
+    # surfaces bad override errors. Currently silent acceptance is acceptable for T3 scope.
+    base = OmegaConf.create(OmegaConf.to_container(defaults, resolve=True))
+    # Layer in YAML file if it exists (operators can override defaults via YAML).
+    # Precedence (low → high): dataclass defaults → YAML file → CLI overrides.
+    yaml_path = Path("run/conf/config.yaml")
+    if yaml_path.exists():
+        yaml_cfg = OmegaConf.load(str(yaml_path))
+        base = OmegaConf.merge(base, yaml_cfg)
     if overrides:
-        cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
-    OmegaConf.resolve(cfg)
-    return cfg
+        base = OmegaConf.merge(base, OmegaConf.from_dotlist(overrides))
+    OmegaConf.resolve(base)
+    return base
