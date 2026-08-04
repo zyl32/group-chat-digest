@@ -81,3 +81,21 @@ def test_digest_empty_messages(in_memory_db, mock_llm: MockLLMAdapter) -> None:
 
     assert digest.model_used == "mock"
     assert len(digest.summary_blocks) == 1
+
+
+def test_digest_fallback_on_llm_exception(in_memory_db) -> None:
+    """If the LLM raises after retries are exhausted, the fallback block is used."""
+
+    class _RaisingLLM:
+        def name(self) -> str:
+            return "raising-mock"
+
+        def complete(self, messages, schema=None) -> str:
+            raise RuntimeError("adapter retries exhausted")
+
+    svc = DigestService(llm=_RaisingLLM(), session=in_memory_db)
+    digest = svc.generate(upload_id="u-raise", messages=_sample_messages())
+
+    assert len(digest.summary_blocks) == 1
+    assert "失败" in digest.summary_blocks[0]["summary"]
+    assert digest.model_used == "raising-mock"
