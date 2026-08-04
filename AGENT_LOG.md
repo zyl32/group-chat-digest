@@ -524,3 +524,81 @@
 - `ba384e9` fix(parsers): extract _load_message_objects helper, harden create_time validation, add missing-field tests
 
 ---
+
+## [2026-08-05] Task T8: Plain Text Parser
+
+**所在 worktree**：`wt-parsers-llm`（分支 `worktree-wt-parsers-llm`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T8 完整 TDD — PlainTextParser（regex 解析 `[YYYY-MM-DD HH:MM:SS] sender: content` 格式）+ 注册到 PARSERS + 5 个测试（normal + 4 error-path）
+- 关键约束：
+  1. 不用 `_load_message_objects`（非 JSON）
+  2. 沿用 T6/T7 lessons：FIXTURES 常量、pytest.raises、defensive、不 stage uv.lock
+  3. 主动加 error-path 测试锁定 contract（empty / malformed / non-utf8 / skips_blank_lines）
+  4. `msg_id=f"plain-{i}"` 用 1-indexed 行号
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`deba103` "feat: add plain text parser"
+- 23 项测试全过（18 prior + 5 new）
+- Self-review 6 项检查全过
+- 主动 disclosed：
+  - `test_plain_skips_blank_lines` 用 `"...".encode("utf-8")` 而非 `b"..."`（Python bytes literal 不支持非 ASCII 字符）— self-caught syntax error
+  - `_load_message_objects` 在 base.py 的 `__all__` 中但不在 package `__init__.py` 的 `__all__`（package-internal，正确）
+  - `uv.lock` 正确未 stage
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 13 项 spec 逐条对：name() returns "plain" ✅；regex 精确匹配 ✅；msg_id 格式 ✅；3 个 error path ✅；blank line skipping ✅；PARSERS 3 entries ✅；`__all__` 含 PlainTextParser ✅；fixture 2 行 ✅
+- Minor observations：
+  - empty-input 检查在循环后（更广 — 含全 blank lines 输入也抛 empty）
+  - sender `.strip()` 但 content 不 strip — 不对称但 spec 沉默
+  - `datetime.fromisoformat` 路径在 regex 约束下实际不可达 — belt-and-suspenders
+  - 测试未断言 timestamp 字段 — low-cost robustness 改进
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, ready to merge**（无 CRITICAL/HIGH）
+- Strengths：
+  - regex 模块级 `re.compile` 一次编译（性能正确）
+  - 所有 wrapped exception 用 `raise ... from e` 链
+  - T6 lessons 全面应用（FIXTURES、pytest.raises、`__all__` 在 module 与 package）
+  - frozen dataclass + 不可变流
+  - 错误消息含行号 `f"line {i}: ..."` 便于调试
+  - `_load_message_objects` 正确不导出到 package `__all__`
+- Minor issues（不阻断）：
+  - MED #1：空 sender 边界（`[...]   : hello`）静默接受 — spec 不要求，可加 `if not sender: raise ParseError`
+  - MED #2：测试未断言 `msgs[0].timestamp` — 加 1 行 `assert msgs[0].timestamp == datetime(2026,8,5,10,0,0)` 闭合唯一未测代码路径
+  - LOW #3：`__all__` in plain_text.py 仅含 PlainTextParser（`_LINE_RE` 私有，正确）
+  - LOW #4：content 可为空字符串 — acceptable
+  - LOW #5：regex `[^:]+` 在 sender 含 `:` 时截断 — chat export 约定 sender 不含 `:`，可接受
+
+**派发 fix implementer**：
+- N/A — 编排器直接编辑 1 行（timestamp 断言），跳过 subagent dispatch
+- 修复：`tests/unit/test_parsers_plain.py` 加 `from datetime import datetime` + `assert msgs[0].timestamp == datetime(2026, 8, 5, 10, 0, 0)`
+- Commit：`23f56ae` "test(parsers): assert plain parser timestamp parsing"
+- 验证：5 plain tests 全过；total 23 passed，无回归
+
+**人工干预**：
+- 编排器跑 `uv run pytest -v` 验证：23 passed
+- 跳过 subagent fix dispatch — 1 行机械编辑，编排器直接做即可
+- MED #1（空 sender 校验）和 LOW 项不修 — spec 不要求，YAGNI
+
+**学到的教训**：
+1. **机械修复可跳过 subagent**：1 行测试断言添加是 trivial 修改，编排器直接 Edit + commit 比 dispatch fix subagent 更高效。教训：fix 范围 < 5 行且无判断空间时，编排器直接做。
+2. **Python bytes literal 不支持非 ASCII**：`b"张三"` 是 SyntaxError。`.encode("utf-8")` 是唯一写法。教训：测试含 CJK 字符的 bytes 输入用 `"...".encode("utf-8")`。
+3. **正则 `[^:]+` 在 chat 格式中的语义**：sender 名约定不含 `:`，所以 `[^:]+` 是正确选择。如果未来要支持含 `:` 的 sender，需改用 named group + greedy/non-greedy 重新设计。教训：regex 设计要匹配 domain convention，不要试图覆盖所有理论 case。
+4. **`splitlines()` 自动处理 CRLF**：Windows `\r\n` 和 Unix `\n` 都被 splitlines 正确处理，无需手动 normalize。教训：用标准库的 splitlines 比 `text.split("\n")` 更稳健。
+5. **3 个 parser 全部就绪后看 PARSERS 注册表**：wechat/feishu/plain 三种格式注册在 `PARSERS: dict[str, type[Parser]]`，T14 Upload Router 将根据 fmt 字段选择 parser。教训：Registry 模式让多 parser 调度变成 dict lookup，新增 parser 只改 `__init__.py` 一处。
+
+**T8 完成 commit 链**：
+- `deba103` feat: add plain text parser
+- `23f56ae` test(parsers): assert plain parser timestamp parsing
+
+---
