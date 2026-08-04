@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ def test_plain_normal():
     assert len(msgs) == 2
     assert msgs[0].sender == "张三"
     assert msgs[0].content == "明天交报告"
+    assert msgs[0].timestamp == datetime(2026, 8, 5, 10, 0, 0)
     assert msgs[1].sender == "李四"
     assert msgs[1].msg_id == "plain-2"
 
