@@ -30,9 +30,9 @@ class DigestResponse(BaseModel):
 class TodoItem(BaseModel):
     """A single todo extracted from the chat.
 
-    `source_msg_id` is `str` to match `ParsedMessage.msg_id` (wechat/feishu
-    IDs are alphanumeric; numeric strings would coerce under int but
-    non-numeric IDs would raise).
+    `source_msg_id` is the LLM-supplied index of the source message in the
+    conversation (not the parser's `msg_id`, which is alphanumeric). The Todo
+    model's `source_msg_id` column is `Integer` to match.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -40,7 +40,7 @@ class TodoItem(BaseModel):
     who: str | None
     what: str
     due_at: str | None
-    source_msg_id: str | None
+    source_msg_id: int | None
 
 
 class TodoResponse(BaseModel):
