@@ -144,3 +144,64 @@
 - `7a5e18f` fix(ci): remove docker-build/deploy stubs, add concurrency/permissions/timeout/cache
 
 ---
+
+## [2026-08-05] Task T3: 配置加载（Hydra + OmegaConf + frozen dataclasses）
+
+**所在 worktree**：`wt-foundation`（分支 `worktree-wt-foundation`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T3 完整 TDD — 实现 `app/config.py` 用 OmegaConf 包装 frozen dataclass `AppConfig`（含 LLMConfig/DBConfig/UploadConfig 三组），暴露 `load_config(overrides)` 返回 DictConfig 支持 `cfg.llm.provider` 属性访问
+- 关键约束：coding-style.md 要求 frozen dataclass + 不可变配置；OmegaConf 结构化校验
+- 测试要求：默认值 + override 两测试
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`f3d753e` "feat(config): add OmegaConf-based load_config with frozen dataclass schema"
+- 实现：4 个 frozen dataclass + `load_config` 函数
+- 关键设计决策：
+  1. 返回 `DictConfig` 直接（而非 `to_container` 后的 dict），保留 `cfg.llm.provider` 属性访问
+  2. 用 `OmegaConf.structured(frozen_dataclass)` 后再 merge overrides 会触发 `ReadonlyConfigError`，因此先把 structured defaults 通过 `OmegaConf.to_container(..., resolve=True)` 物化成 dict，再用 `OmegaConf.create(...)` 重新包成可变 DictConfig，最后 merge overrides
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 验证：4 个 dataclass 字段齐全、load_config 签名匹配、frozen=True 满足 immutability、覆盖测试通过
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **No, needs fixes**
+- Important #1：`run/conf/config.yaml` 文件存在但 `load_config` 完全不读它（死代码，operator 误以为改 yaml 生效）
+- Important #2：缺边界 case 测试（空 overrides list 应等同 None）
+- Important #3：缺 YAML 加载测试
+- Minor #4：TODO 注释应放在 workaround 附近便于后续 task 回找
+- Minor #5：structured validation 被静默绕过（frozen → 物化 → 重建丢了 schema 校验），应留 TODO 给 T11/T12 重新启用
+
+**派发 fix implementer**：
+- 模型：sonnet（修复涉及 OmegaConf merge 链路 + 新增测试）
+- 修复 1：在 `load_config` 中插入 YAML 文件加载层 — 优先级：dataclass defaults → YAML → CLI overrides
+- 修复 2：新增 `test_load_config_empty_overrides_list` 验证空 list 与 None 行为一致
+- 修复 3：新增 `test_load_config_reads_yaml_file` 验证 YAML 读取
+- 修复 4：在 workaround 注释旁加 `TODO(T11/T12)` 引用，便于后续 task 重新启用 structured validation
+- Commit：`89a9832` "fix(config): load YAML file, add edge case tests, defer structured validation TODO"
+
+**人工干预**：
+- 编排器读 `app/config.py` 与 `tests/unit/test_config.py` 验证：YAML 加载逻辑就位、2 个新测试存在、TODO 注释指向 T11/T12
+- 跑 `uv run pytest -v`：5 项全过（2 原 config + 2 新增 + 1 healthz）
+- 跳过完整 re-review：fix 范围是机械添加（YAML 加载 4 行 + 2 个测试 + TODO 1 行），implementer 自报 + 编排器直接 Read + 跑测试 三重验证足够
+
+**学到的教训**：
+1. `OmegaConf.structured(frozen_dataclass)` 会产生 readonly 节点，与 `OmegaConf.merge(overrides)` 不兼容。变通方法：先 `to_container(resolve=True)` 物化成 plain dict，再 `OmegaConf.create(...)` 重新包成可变 DictConfig。代价：丢失 structured schema 校验（坏 override 静默接受）。在 T11/T12 LLM provider 集成时，错误 override 才会显式爆炸，那时再切回 structured + 变更 frozen 实现策略。
+2. 死代码是 spec compliance 看不见但 code quality 抓得到的典型 issue — `run/conf/config.yaml` 既然存在就必须有路径读取，否则要么删文件要么接通。最终选择接通（YAML 是 operator 调优的合理途径）。
+3. 边界 case 测试（空 list vs None）容易漏。写 PLAN 时若提到 `Optional[list[str]] = None`，应在测试一栏同时给出 `[]` 与 `None` 两种调用。
+4. Workaround 注释要带 TODO 引用具体 task 编号，否则后续 task 不知道回来修。注释 + 引用 = 给未来自己留路标。
+
+**T3 完成 commit 链**：
+- `f3d753e` feat(config): add OmegaConf-based load_config with frozen dataclass schema
+- `89a9832` fix(config): load YAML file, add edge case tests, defer structured validation TODO
+
+---
