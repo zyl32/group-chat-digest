@@ -371,3 +371,80 @@
 - T5: `c546cd7` + `fb02ea8`
 
 ---
+
+## [2026-08-05] Task T6: Parser 协议 + WeChat JSON Parser
+
+**所在 worktree**：`wt-parsers-llm`（分支 `worktree-wt-parsers-llm`）— 本 worktree 第一个 task
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T6 完整 TDD — Parser Protocol + ParsedMessage (frozen dataclass) + ParseError + WechatJsonParser + PARSERS registry
+- 关键约束：coding-style.md Factory/Registry 模式、`__all__` 在每个 `__init__.py`、frozen dataclass 不可变、YAGNI（不加 Feishu/PlainText，不加额外字段）
+- 给定完整 PLAN.md T6 节文本（含 base.py/wechat_json.py/__init__.py 三段实现 + 3 个测试）
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`f2821c5` "feat: add Parser protocol and WeChat JSON parser"
+- 12 项测试全过（9 baseline + 3 new T6）
+- Self-review 6 项检查全过
+- 主动 disclosed deviations：
+  1. 创建 `app/adapters/__init__.py`（空 `__all__` package marker）— coding-style.md 要求
+  2. 防御性编程加强：加 `isinstance(data, dict)` + `isinstance(m, dict)` 检查，但 error contract 与 spec 一致
+  3. `uv.lock` 有 unrelated venv sync diff — 正确地未 stage
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 验证方式：独立 `git show f2821c5 -- <file>` 读 5 个文件 + 1 个额外 `app/adapters/__init__.py`，11 项 spec 逐条对
+- 结论：✅ Spec compliant
+  - `ParsedMessage` frozen dataclass with 4 fields ✅
+  - `Parser` Protocol with 2 methods ✅
+  - `WechatJsonParser.name()` returns "wechat" ✅
+  - 4 个 error path 全部抛 `ParseError` ✅
+  - `__all__` 含 5 个公共符号 ✅
+  - `PARSERS = {"wechat": WechatJsonParser}` ✅
+  - Fixture 2 条消息 sender 正确 ✅
+  - 测试数 = 3 ✅
+- Minor observations（不阻断）：m2 timestamp 用完整 ISO 8601；try/except/else 风格不如 pytest.raises；PARSERS 类型注解太松
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with one fix**
+- Strengths：frozen dataclass 简洁、Protocol 用 typing.Protocol 无需 runtime_checkable、错误处理具体（JSONDecodeError/KeyError/ValueError + raise from）、isinstance 防御合理（I/O 边界）、每文件 `__all__` + 类型注解
+- Important issue：
+  - **HIGH #1**：`PARSERS: dict[str, type]` 太松，改为 `dict[str, type[Parser]]`
+- Minor issues（不阻断）：
+  - MED #2：测试 try/except/else 不如 `pytest.raises` 惯用，且 `import pytest` 缺
+  - MED #3：硬编码相对路径 `Path("tests/fixtures/wechat_sample.json")`，从非根目录跑会断 — 改 `FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"`
+  - LOW #4：缺字段级边界测试（missing sender / bad timestamp format / non-string content）
+  - LOW #5：timestamp 在 sender/content/msg_id 前验证，错误消息顺序耦合
+  - LOW #6：`name()` 是实例方法，PARSERS 注册的是类 — 目前无冲突
+
+**派发 fix implementer**：
+- 模型：haiku
+- 修复 1：`PARSERS: dict[str, type[Parser]] = {"wechat": WechatJsonParser}`
+- 修复 2：测试改 `pytest.raises(ParseError, match="empty")` + `pytest.raises(ParseError)`，加 `import pytest`
+- 修复 3：`FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"` 模块级常量
+- Commit：`a6bd556` "fix(parsers): tighten PARSERS type hint, modernize test style to pytest.raises"
+- 验证：12 passed，无回归
+
+**人工干预**：
+- 编排器跑 `uv run pytest -v` 验证：12 passed
+- 跳过完整 re-review：fix 范围是机械添加（1 行类型注解 + 测试风格重构 + 路径常量化）
+- LOW 字段级边界测试推迟 — T7/T8 自然引用 base.py，到时若发现 regression 再补
+
+**学到的教训**：
+1. **Registry 类型注解要精确**：`dict[str, type]` 丢失"Parser 子类型"契约，`dict[str, type[Parser]]` 把契约写在类型层
+2. **测试风格 `pytest.raises` > try/except/else**：自带 `match` 正则断言，一行替代四行
+3. **测试 fixture 路径用模块级常量**：`Path("tests/fixtures/...")` 假设从 root 跑；`Path(__file__).resolve().parent.parent / "fixtures"` 位置无关
+4. **defensive isinstance 在 I/O 边界是合理的**：parser 入口接收任意 bytes，type guard 防止 AttributeError；非 YAGNI 违规
+5. **uv.lock unstaged diff 处理**：implementer 正确未 stage unrelated venv sync diff，保持 commit 干净
+
+**T6 完成 commit 链**：
+- `f2821c5` feat: add Parser protocol and WeChat JSON parser
+- `a6bd556` fix(parsers): tighten PARSERS type hint, modernize test style to pytest.raises
+
+---
