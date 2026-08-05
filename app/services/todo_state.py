@@ -20,9 +20,18 @@ _TRANSITIONS: Final[Mapping[tuple[str, str], str]] = MappingProxyType({
     ("snoozed", "reactivate"): "pending",
 })
 
+_KNOWN_ACTIONS: Final[frozenset[str]] = frozenset(
+    {action for _, action in _TRANSITIONS.keys()}
+)
+
 
 class TodoStateMachine:
     def transition(self, current_state: str, action: str) -> str:
         if (current_state, action) in _TRANSITIONS:
             return _TRANSITIONS[(current_state, action)]
         raise IllegalTransition(current_state, action)
+
+    @classmethod
+    def known_actions(cls) -> frozenset[str]:
+        """Return the set of action names recognized by the state machine."""
+        return _KNOWN_ACTIONS

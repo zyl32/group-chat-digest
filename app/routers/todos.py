@@ -1,6 +1,7 @@
 """Todo router — list todos and apply state machine transitions."""
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,6 +25,19 @@ class ActionRequest(BaseModel):
     action: str
 
 
+def _serialize_dt(dt: datetime | None) -> str | None:
+    """Serialize a datetime to UTC ISO 8601.
+
+    Naive datetimes (e.g., from `datetime.fromisoformat("2026-08-10")` in T16)
+    are assumed to be UTC; tz-aware datetimes are converted to UTC.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 @router.get("")
 def list_todos(session: Session = Depends(get_db)) -> list[dict[str, Any]]:
     """List all todos with key fields (no message bodies)."""
@@ -33,7 +47,7 @@ def list_todos(session: Session = Depends(get_db)) -> list[dict[str, Any]]:
             "id": t.id,
             "what": t.what,
             "who": t.who,
-            "due_at": t.due_at.isoformat() if t.due_at else None,
+            "due_at": _serialize_dt(t.due_at),
             "state": t.state,
         }
         for t in rows
@@ -48,12 +62,14 @@ def perform_action(
 ) -> dict[str, Any]:
     """Apply a state machine action to a todo.
 
-    Returns 200 with new state on success, 404 if todo missing, 409 if the
-    transition is illegal (e.g., done -> reactivate is not allowed).
+    Returns 200 with new state on success, 400 if action is unknown,
+    404 if todo missing, 409 if the transition is illegal.
     """
+    if body.action not in TodoStateMachine.known_actions():
+        raise HTTPException(400, f"unknown action: {body.action}")
     t = session.get(Todo, todo_id)
     if t is None:
-        raise HTTPException(404)
+        raise HTTPException(404, "todo not found")
     try:
         t.state = _sm.transition(t.state, body.action)
     except IllegalTransition as e:
