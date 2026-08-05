@@ -1370,3 +1370,78 @@
 - `b9af4bf` refactor(export-router): DRY query/dict construction, Literal format enum for 422 validation
 
 ---
+
+## T19: Credential Router + First-Run Setup
+
+**时间**：2026-08-05
+
+**派发 implementer subagent**（T13/T14/T17/T18 lessons 应用）：
+- 模型：sonnet
+- 任务：T19 Credential Router — POST/GET/DELETE `/api/credentials/{key_name}` 端点
+- 上下文提供：
+  - T13 `credential_vault.py` 已实现 `CredentialVault` Protocol + `InMemoryVault` + `OSKeyringVault`
+  - §3.1 hard constraints（key 绝不硬编码 / 绝不提交 git / 绝不写入日志 / 至少一种安全存储 / 可查看更新清除 / status 不回显明文）
+  - T18 `Literal` enum + `extra="forbid"` 模式
+  - T18 DRY helper 提取模式
+  - `body.value` 绝不能出现在 `logger.*` 调用中
+  - `Final[frozenset[str]]` 用于 `_ALLOWED_KEYS` allowlist
+- 测试：13 个（spec 4 + 衍生 9：extra field 422 / missing value 422 / empty value 422 / unknown key_name 400 / response shape exact / no-leak-in-logs / lifecycle / idempotent clear / allowlist-on-all-verbs）
+- 状态：DONE
+  - 91 → 104 passed（+13 新测试，无回归）
+  - Commit `1cc9100` "feat(routers): add credential router with status/store/clear endpoints"
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 4 spec tests + 9 hardening tests 全通过；full suite 104 passed
+- 8 项 §3.1 security checklist 全部落地：
+  - `status()` 只返回 `{"configured": bool}` ✓
+  - `body.value` 不出现在任何 `logger.*` 调用 ✓
+  - `StoreRequest` 用 `extra="forbid"` + `min_length=1` ✓
+  - `key_name` allowlist 在 3 个端点全执行 ✓
+  - 无硬编码 secrets / 无 `eval`/`exec` ✓
+  - `clear()` idempotent ✓
+- Hardening beyond literal spec 全部由 §3.1 justifies（allowlist 防 vault pollution / `min_length=1` 防 empty value / no-log-value test enforce "绝不写入日志"）
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：✅ Approved
+- Strengths：119 行 < 200；`Final[frozenset[str]]` allowlist；allowlist 在 3 个 verb 全执行（`_validate_key_name` helper DRY）；`test_store_does_not_log_value` 用 `caplog.at_level(DEBUG)` + `record.getMessage()` 覆盖 static + parameterized log lines；lazy singleton `get_vault()` 让 monkeypatch 不触发真实 keyring access；idempotent `clear()` 端到端保留（vault 捕获 `KeyringError`/`KeyError` → router 无条件 200）
+- Issues：
+  - **[Important]**：`_validate_key_name` 400 path 在 response body 和 log line 中 echo user-supplied `key_name`。当前 allowlist `{"llm_api_key"}` 公开所以无泄露，但若未来 allowlist 包含敏感 identifier 会变 reflection sink。Safe for v1，noted for future maintainers
+  - **[Minor]**：`test_store_does_not_log_value` docstring 说 "scans all log records...both router and vault logs" 但 `caplog.at_level(DEBUG, logger="app.routers.credentials")` 只捕获 router logger。InMemoryVault 不 log 所以实际覆盖足够，但 docstring 过度声明。**已修复**：docstring 收紧为 "Captures the router logger at DEBUG level (the vault backend InMemoryVault does not log, so router coverage is sufficient)"
+  - **[Minor]**：缺 `test_status_does_not_log_value` regression guard — router 在 status path 不 log，trivially satisfied，但 cheap to add。Deferred
+  - **[Minor]**：`OSKeyringVault.status()` materializes secret into Python memory 仅检查 presence — timing side-channel + linger risk。T13 scope，noted upstream
+  - **[Minor]**：`_vault` 模块级 mutable global — 不 thread-safe under concurrent first-init，但 single-process FastAPI v1 fine
+- Verdict: ✅ Approved（无 critical / 无 important-blocking）
+
+**修复 Minor docstring**：
+- 编排器直接编辑：`test_store_does_not_log_value` docstring 收紧为 "Captures the router logger at DEBUG level (the vault backend InMemoryVault does not log, so router coverage is sufficient for this test's mock setup)"
+- Commit `67789ba` "docs(test): tighten test_store_does_not_log_value docstring to match caplog filter scope"
+
+**学到的教训**：
+1. **`status()` 必须只返回 boolean，永不返回 value/length/prefix**：§3.1 "查看状态时不得回显明文" 不仅是 "不返回 value"，而是不返回任何 hint（length、prefix、hash、last-modified）。`{"configured": bool}` 是唯一安全 shape。`InMemoryVault.status()` 返回 `{"configured": key_name in self._store}`，`OSKeyringVault.status()` 返回 `{"configured": get_password(...) is not None}` — 两者都只暴露 boolean。router 直接 pass-through，不做 post-processing。教训：security invariants 应该在 lowest layer（vault）强制 + test 在 router layer pin contract（`list(r.json().keys()) == ["configured"]`）。
+2. **`body.value` 绝不能进入 `logger.*` 调用**：`logger.warning("rejected unknown credential key_name: %s", key_name)` 只 log key_name（公开 allowlisted identifier）。`get_vault().store(key_name, body.value)` 调用 vault，不 log。`test_store_does_not_log_value` 用 `caplog.at_level(DEBUG)` + 遍历 `record.getMessage()` 扫描 secret string。教训：处理 secret 的 endpoint 必须 test "no-log-value" invariant；log 中只允许 public identifiers（key_name），永不 secret 本身。
+3. **`key_name` allowlist 防 vault pollution**：`_ALLOWED_KEYS: Final[frozenset[str]] = frozenset({"llm_api_key"})` 让 attacker 不能用任意 key_name 调 `/api/credentials/attacker-chosen-key` 污染 OS keyring。`_validate_key_name` 在 3 个端点全执行（`status`/`store`/`clear`），不只一个。教训：path parameter 若作为 storage key，必须 allowlist；arbitrary path-param-as-key 是 injection vector。
+4. **Pydantic 422 vs manual 400 分层**：`StoreRequest` 用 `Field(..., min_length=1)` + `extra="forbid"` 让 empty value / extra field / missing value 在 Pydantic validation layer reject 为 422（FastAPI 标准 `{"detail":[...]}` shape）。`key_name` 是 path param 不能 pre-flight Pydantic，所以 manual `raise HTTPException(400, ...)` 在 `_validate_key_name`。教训：body validation 用 Pydantic 约束（422），path/semantic validation 用 manual raise（400）；不要混用。
+5. **lazy singleton 让 monkeypatch 不触发真实 keyring**：`get_vault()` 用 `global _vault; if _vault is None: _vault = OSKeyringVault()` lazy 构造。测试 `monkeypatch.setattr("app.routers.credentials.get_vault", lambda: InMemoryVault())` 替换 function 本身，永远不调用原 `get_vault()`，所以永远不触发 `OSKeyringVault()` 实例化 → 永远不碰真实 OS keyring。教训：singleton 用 lazy + function-level override（不是 instance-level override）让测试隔离 OS 资源。
+6. **`clear()` idempotent 是端到端 invariant**：T13 `OSKeyringVault.clear()` 捕获 `(KeyringError, KeyError)` silently；T19 router `clear` endpoint 无条件返回 `{"cleared": True}` 200。`test_clear_idempotent_on_unconfigured` 验证连续两次 DELETE 都 200。教训：DELETE 应该 idempotent（重复调用同 state）；不要 404 already-cleared，因为 client 可能 retry。
+7. **caplog filter scope 与 docstring 一致**：`caplog.at_level(DEBUG, logger="app.routers.credentials")` 只捕获 router logger。如果 vault 也 log（实际 InMemoryVault 不 log），需要 drop `logger=` arg 或用 `caplog.set_level` + 全局 scan。docstring 必须如实描述覆盖范围，不要 overstate。教训：test 的 docstring 是 contract，必须与 test 实际验证的范围一致。
+8. **§3.1 约束分层**：T13 vault 实现 "至少一种安全存储"（OSKeyringVault）+ "status 不回显明文"；T19 router 实现 "可查看/更新/清除" + "绝不写入日志"（no-log-value test）+ "首次运行引导"（POST endpoint 让 frontend T20 引导）。约束 2（不提交 git）由 `.gitignore` + `security-guard.js` hook 保证；约束 6（首次运行隐藏输入）由 T20 frontend 实现；约束 8（SPEC 威胁模型）由 SPEC.md security section 保证。教训：multi-layer constraint 需要 multi-layer enforcement，单一 task 不可能 cover 所有。
+
+**T19 完成 commit 链**：
+- `1cc9100` feat(routers): add credential router with status/store/clear endpoints
+- `67789ba` docs(test): tighten test_store_does_not_log_value docstring to match caplog filter scope
+
+**wt-services-routers worktree 完成总结**：
+- T13 ✓ Credential Vault
+- T14 ✓ Upload Router
+- T15 ✓ Digest Service
+- T16 ✓ Todo Extractor
+- T17 ✓ Todo Router
+- T18 ✓ Export Router
+- T19 ✓ Credential Router
+- 104 tests passing，0 regressions
+- 准备合并到 main
+
+---
