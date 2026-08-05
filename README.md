@@ -82,6 +82,8 @@ fly secrets set LLM_PROVIDER=deepseek
 fly secrets set DEEPSEEK_API_KEY=sk-xxxxxxxx
 ```
 
+> **应用名冲突**：若 `group-chat-digest` 在 Fly.io 上已被占用，请修改 `fly.toml` 的 `app` 字段为唯一名称（如 `group-chat-digest-<your-handle>`），并相应更新本文档中的 URL。
+
 > **注意**：本仓库**未**自动执行 `fly deploy`。CI 仅在 `main` 分支推送时触发 `fly deploy --remote-only`，前提是 GitHub Secret `FLY_API_TOKEN` 已配置。首次部署需由仓库所有者在本地手动执行 `fly deploy` 一次以创建应用。
 
 ### 配置要点

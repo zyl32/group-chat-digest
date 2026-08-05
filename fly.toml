@@ -1,6 +1,7 @@
 # Fly.io deployment config for Group Chat Digest.
 # App name must be globally unique on Fly.io; if "group-chat-digest" is
 # taken, change this and update README URL accordingly.
+version = "1"
 app = "group-chat-digest"
 primary_region = "nrt"
 
@@ -31,5 +32,8 @@ primary_region = "nrt"
 [[mounts]]
   # Persist SQLite DB across deploys. Fly.io machines are ephemeral;
   # without this volume, /app/data/db/app.db is lost on every deploy.
+  # NOTE: Fly volumes are per-region. If primary_region is changed,
+  # the volume stays in the original region — migrate via `fly volumes`
+  # commands or accept data loss on region change.
   source = "data_volume"
   destination = "/app/data"
