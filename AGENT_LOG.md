@@ -1224,3 +1224,77 @@
 - `c4a08a8` fix(todo-extractor): cap fallback cardinality, cap digest blocks in prompt, add_all, prompt-injection TODO
 
 ---
+
+## [2026-08-05] Task T17: Todo Router + State Machine Endpoint
+
+**所在 worktree**：`wt-services-routers`（分支 `worktree-wt-services-routers`）
+
+**触发的 Superpowers 技能**：
+- `superpowers:subagent-driven-development`
+- spec reviewer + code quality reviewer 两阶段评审
+
+**派发 implementer subagent 的 prompt 摘要**：
+- 模型：sonnet
+- 任务：T17 完整 TDD — `app/routers/todos.py`（`list_todos` + `perform_action`）+ `app/main.py` include router + 3 PLAN 测试 + 1-2 edge case
+- 关键约束：
+  1. 拒绝 PLAN spec 的 `cfg["db"]["url"]` + inline `engine = get_engine(...)` per-request — 复用 T14 的 `Depends(get_db)` DI
+  2. PLAN spec `action: dict` untyped — 改用 `ActionRequest` Pydantic model + `extra="forbid"`
+  3. T14 lesson：`HTTPException(409, "illegal state transition")` generic message + `logger.warning` server-side（不回显 `str(e)`）
+  4. T15 lesson：`session.flush()` 不 `session.commit()`
+
+**subagent 输出关键片段**：
+- 状态：DONE
+- Commit：`2ac4157` "feat(routers): add todo router with state machine transitions"
+- 82 项测试全过（77 prior + 5 new = 3 PLAN + 2 edge case）
+- 0 deviations — 严格按编排器 prompt 实现（T14 lessons 全应用）
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 3 文件全在 ✅；5 测试通过 ✅；`TodoStateMachine.transition()` 调用 ✅；`IllegalTransition` catch → 409 ✅；`flush()` 不 `commit()` ✅；`uv.lock` 未 staged ✅；无 out-of-scope 修改 ✅
+- 3 deviations 全部接受（T14 lesson 应用 / edge case tests / extra=forbid 422 test 跳过）
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：Ready to merge? **Yes, with fixes**
+- Strengths：69 行 < 200；`__all__` + module logger + type hints 全有；`ActionRequest` `extra="forbid"`；`_sm = TodoStateMachine()` module-level 安全（`_TRANSITIONS` immutable `MappingProxyType` T9 lesson）；`session.get(Todo, todo_id)` PK lookup；`IllegalTransition` specific catch + `from e` chain；`logger.warning` lazy `%`-style format
+- Important issues：
+  - **#1（false positive）**：reviewer 声称 `conftest.py` import MockLLMAdapter → `app/adapters/llm/__init__.py` eager import DeepSeek → `from openai import OpenAI` → ImportError 阻塞 integration suite。**编排器验证**：tests 实际 82 passed，openai 包已装。reviewer 环境不同步，跳过
+  - **#2**：`t.due_at.isoformat()` 序列化 naive datetime 时无 `Z`/offset — T16 `datetime.fromisoformat("2026-08-10")` 返回 naive datetime。修复：`_serialize_dt()` — naive 假设 UTC + `astimezone(utc).isoformat()`
+  - **#3**：`ActionRequest.action` 不校验是否已知 action — typo "donr" 走到 state machine 被 `IllegalTransition` 拒，但返回 409（与真实 illegal transition 不可区分）。修复：`TodoStateMachine.known_actions()` classmethod + `if body.action not in known_actions(): raise HTTPException(400, "unknown action")`
+- Minor issues（不阻断）：
+  - LOW #4：`list_todos` 无 pagination/filtering — v1 接受
+  - LOW #5：response 用 `list[dict]` 而非 Pydantic model — 风格，v1 接受
+  - LOW #6：`perform_action` 只 catch `IllegalTransition` — 其他异常（corrupt state）500，合理
+  - LOW #7：404 缺 `detail` — 加 `detail="todo not found"`
+  - LOW #8：缺 `test_perform_action_unknown_action` 测试 — 加上覆盖 #3 新 path
+  - LOW #9：404 无 `logger.info` — 风格，跳过
+
+**派发 fix implementer**：
+- 模型：编排器直接执行（机械修改 + 1 个 classmethod 添加，T8 precedent）
+- 修复 Important #2：`app/routers/todos.py` 加 `_serialize_dt(dt)` — `if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)` + `dt.astimezone(timezone.utc).isoformat()`；`list_todos` 调用替换
+- 修复 Important #3：`app/services/todo_state.py` 加 `_KNOWN_ACTIONS: Final[frozenset[str]]` 从 `_TRANSITIONS.keys()` 派生 + `TodoStateMachine.known_actions()` classmethod 返回它；`perform_action` 开头 `if body.action not in TodoStateMachine.known_actions(): raise HTTPException(400, f"unknown action: {body.action}")`
+- 修复 Minor #7：`HTTPException(404)` → `HTTPException(404, "todo not found")`
+- 加 2 个新测试覆盖新 path：`test_action_unknown_action_returns_400`（`{"action":"garbage"}` → 400）+ `test_list_todos_serializes_naive_datetime_as_utc`（断言 `due_at.endswith("+00:00")` + 解析回 datetime 等于 UTC instant）
+- 跳过：#1（false positive）/ #4-6（v1 接受）/ #8（已通过新测试覆盖）/ #9（风格）
+- Commit：`4106abb` "fix(todo-router): validate action names, normalize due_at to UTC, add 404 detail + tests"
+- 验证：84 passed（82 prior + 2 new）
+
+**人工干预**：
+- 编排器跑 `uv run pytest tests/integration/test_todo_router.py tests/unit/test_todo_state_machine.py -v`：14 passed（5 router + 9 state machine）
+- 编排器直接 Read 验证：`_serialize_dt` + `known_actions()` + `HTTPException(404, "todo not found")` 全部应用
+- 跳过完整 re-review：fix 范围是 1 个 helper + 1 个 classmethod + 1 个 detail 字符串 + 2 个新测试，机械修改三重验证足够
+
+**学到的教训**：
+1. **reviewer 的 false positive 也要 verify**：code quality reviewer 声称 conftest import 阻塞 suite，编排器直接跑 `uv run pytest` 验证 — 82 passed，openai 包已装。reviewer 环境可能与编排器不同步（subagent 拿 fresh env）。教训：reviewer 报告的 critical bug 必须编排器独立验证，不能盲信。
+2. **naive datetime 序列化是 cross-layer 类型陷阱**：T16 `datetime.fromisoformat("2026-08-10")` 返回 naive datetime（`tzinfo=None`），存进 `Todo.due_at: DateTime` column。T17 router `t.due_at.isoformat()` 输出 `"2026-08-10T00:00:00"` 无 tz 标记，下游 parser 无法判断 timezone。修复：序列化时 `if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)` 假设 UTC + `astimezone(utc).isoformat()` 输出 `+00:00` 后缀。教训：跨 layer 传 datetime 时，write layer 必须 normalize 到 tz-aware UTC，read layer 必须 serialize 为 ISO 8601 with offset；naive datetime 是 ambiguity 来源。
+3. **action allow-list 把 typo 与 illegal transition 分开**：原 `_sm.transition(state, "garbage")` 返回 409（IllegalTransition），与真实 illegal transition（如 `done → reactivate`）不可区分。加 `known_actions()` classmethod 让 router 在调 state machine 前先校验 action 是否在已知集合中 — 不在则 400（client error: typo），在但 transition 不合法则 409（conflict: real illegal transition）。教训：API 错误码应区分"client 拼错"（400）与"业务规则拒绝"（409），后者需要先通过 schema 校验。
+4. **`known_actions()` 从 `_TRANSITIONS` 派生而非硬编码**：`_KNOWN_ACTIONS = frozenset({action for _, action in _TRANSITIONS.keys()})` — 自动跟随 state machine 演进。教训：派生常量优于硬编码副本，避免漂移。
+5. **`detail` 字段提升 API 可用性**：`HTTPException(404)` 默认 body 是 `"Not Found"`，加 `detail="todo not found"` 让 client 知道是 todo 资源不存在而非路径错误。教训：所有 4xx/5xx response 应有具体 `detail`，不要让 client 猜。
+6. **frozen `frozenset` 派生自 `MappingProxyType`**：`_KNOWN_ACTIONS: Final[frozenset[str]] = frozenset(...)` — `frozenset` 本身不可变，`Final` 锁定引用。与 T9 `_TRANSITIONS: Final[Mapping[...]] = MappingProxyType({...})` 一致模式。教训：模块级常量用 `Final + frozenset/MappingProxyType` 双层防护。
+
+**T17 完成 commit 链**：
+- `2ac4157` feat(routers): add todo router with state machine transitions
+- `4106abb` fix(todo-router): validate action names, normalize due_at to UTC, add 404 detail + tests
+
+---
