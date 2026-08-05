@@ -1,0 +1,35 @@
+# Fly.io deployment config for Group Chat Digest.
+# App name must be globally unique on Fly.io; if "group-chat-digest" is
+# taken, change this and update README URL accordingly.
+app = "group-chat-digest"
+primary_region = "nrt"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Default to mock LLM for first deploy (no API key required).
+  # Production override: `fly secrets set LLM_PROVIDER=deepseek`
+  LLM_PROVIDER = "mock"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[[mounts]]
+  # Persist SQLite DB across deploys. Fly.io machines are ephemeral;
+  # without this volume, /app/data/db/app.db is lost on every deploy.
+  source = "data_volume"
+  destination = "/app/data"
