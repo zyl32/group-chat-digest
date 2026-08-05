@@ -1512,3 +1512,51 @@
 - `f6a3028` fix(frontend): use DOM construction for Todoist URL link to prevent innerHTML XSS
 
 ---
+
+## T21: 演示数据生成器
+
+**时间**：2026-08-05
+
+**派发 implementer subagent**：
+- 模型：sonnet
+- 任务：T21 mock chat data generator — 3 个场景数据集 + 测试
+- 上下文提供：
+  - 3 scenarios: normal (200 mixed msgs) / with_todos (5 actionable + 50 acks) / noise (120 short msgs)
+  - `random.seed(42/43/44)` deterministic
+  - 无 PII（synthetic student_XX names + common surnames）
+  - `main(out_dir: Path)` for testability
+  - stdlib only
+  - type hints + `__all__` + docstrings
+- 测试：11 个（spec 4 + 衍生 7：required keys / ISO timestamp / msg_id unique / named senders in with_todos / noise all short / deterministic / main writes files）
+- 状态：DONE
+  - 112 → 123 passed（+11 新测试，无回归）
+  - Commit `a080bdb` "feat: add mock chat data generator and 3 demo datasets"
+
+**派发 combined spec + code quality reviewer**：
+- 模型：sonnet
+- 结论：✅ Approved（spec compliant + code quality 无 critical/important issues）
+- Spec checklist 全通过：scripts/gen_mock_chat.py + 3 JSON datasets + 11 tests
+- 4 spec tests 全通过（normal 200 / with_todos "交报告" / noise 120 short / no PII）
+- Code quality strengths：type hints 全有 + `__all__` + module/function docstrings + `random.seed` 在每个 generator 内部 + stdlib only + 无 eval/exec + 无硬编码 secrets + `main(out_dir)` testable + `test_main_writes_files` 用 `tmp_path` + 小聚焦模块 106 行
+- 2 deviations 全部 verified + justified：
+  1. `msg_id` 用 hex `m{i:x}` 而非 `m{i}` — index 138 → `m138` 包含 "138" 子串，spec `test_no_real_pii` 会失败。hex（`m0`/`m1`/.../`m8a`/.../`mc7`）避免 "138" 同时唯一可读。其他 generator 用 `t{i}`/`r{i}`/`n{i}`（范围不达 138）
+  2. 第一个 todo content 改为 "明天 18:00 前交报告，操作系统实验" — 原文 "明天 18:00 前交操作系统实验报告" 不含连续 "交报告" 子串，spec `test_with_todos_contains_todos` 会失败。改后含连续 "交报告" 仍有意义（deadline + task）
+- Minor issues（不阻断）：
+  - `scripts/__init__.py` 空文件 — `uv run` 把 project root 加 sys.path 让 `scripts` 可 import，但空文件作 package marker 无害且有益。建议 `pyproject.toml` 加 `pythonpath = ["."]` 提升可移植性（裸 `pytest` 也工作）
+  - `_NAMES` 模块级 list 在 `generate_with_todos` 复用给 ack senders — 故意，"张三" 偶尔发 "收到" ack 不算 bug
+  - `test_no_real_pii` 只断言 `generate_normal()` — 可加 `test_no_real_pii_all_generators` 覆盖 with_todos 和 noise
+
+**学到的教训**：
+1. **spec 自带的测试可能自相矛盾**：spec `test_no_real_pii` 检查 `"138" not in text`，但 spec 的 `generate_normal()` 用 `msg_id=f"m{i}"`，i=138 时 `msg_id="m138"` 包含 "138"。要么改 msg_id 格式（hex `m{i:x}`），要么改 PII 检查（更严格 regex）。implementer 选 hex format 更简洁。教训：读 spec 时要验证 spec tests 之间是否一致；不一致时选最小修改让全部 spec tests 通过。
+2. **substring PII 检查是 weak heuristic**：`"138" not in text` 会误报任何含 "138" 的合法字符串（msg_id、timestamp、content）。更严谨的 PII 检查用 regex（`\b1[3-9]\d{9}\b` for phone）。但 v1 用 substring 是 acceptable quick gate。教训：substring PII 检查是 baseline，不是 exhaustive；production 用 regex + entropy 检测。
+3. **deterministic seed 在每个 generator 内部**：`random.seed(42)` 在 `generate_normal()` 开头，`random.seed(43)` 在 `generate_with_todos()`，`random.seed(44)` 在 `generate_noise()`。这让 "以任何顺序调用任何 generator 都 deterministic"，而非 "module import 时 seed 一次"。`test_deterministic_with_seed` 验证两次调用 `generate_normal()` 输出相同。教训：deterministic function 应自包含 seed，不依赖 caller 或 module-level state。
+4. **`main(out_dir: Path)` for testability**：spec `__main__` block 直接 `Path("data/mock")` hardcoded。重构为 `main(out_dir: Path) -> None` 让 `test_main_writes_files` 用 `tmp_path` fixture 调用，不污染真实 `data/mock/`。`if __name__ == "__main__": main(Path("data/mock"))` 1 行。教训：任何 `__main__` block 应提取为 `main(args)` 函数，让 test 用 tmp_path 调用；不要在 `__main__` 直接 hardcoded path。
+5. **mock data 的 3 scenario 覆盖**：normal（mixed topics，LLM 应提取一些 todo）/ with_todos（明确 actionable，LLM 应提取 5 个）/ noise（全短消息，LLM fallback）。这 3 个覆盖 happy path + edge case + fallback。教训：mock data 应覆盖多个 scenario 而非单一 happy path；每个 scenario 文档化 "LLM 应该做什么" 让 test 期望明确。
+6. **`scripts/__init__.py` 作 package marker**：即使空，让 `from scripts.gen_mock_chat import ...` 在多种 pytest config 下 work。`uv run` 自动加 project root 到 sys.path，但裸 `pytest` 可能不。`__init__.py` 是 portable solution。教训：scripts 目录作 Python package 让 import 在所有环境一致工作。
+7. **PII 检查覆盖 common patterns**：`"138"` 是中国手机号前缀（移动 13x 段），`"1" * 11` 是 11 位数字串（中国手机号长度）。这两个 substring check 覆盖最常见 PII pattern。Production 应扩展（email regex、ID card 18 位、地址关键词）。教训：mock data 的 PII 检查应覆盖目标 region 的 common PII patterns。
+8. **commit dataset JSON 文件**：3 个 JSON dataset（normal 32KB / with_todos 7.8KB / noise 17KB）commit 到 repo，让 E2E tests（T22）和 cold-start validation（T25）能用而不需 re-generate。`data/mock/` 不在 `.gitignore`。教训：test fixtures（小型 mock data）应 commit；大型 fixture 用 git-lfs 或外部存储。
+
+**T21 完成 commit 链**：
+- `a080bdb` feat: add mock chat data generator and 3 demo datasets
+
+---
