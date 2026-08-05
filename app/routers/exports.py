@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
@@ -15,6 +15,8 @@ from app.services.export import build_todoist_url, export_ics
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/exports")
 
+_NOT_FOUND_MSG = "no todos found for given ids"
+
 
 class ExportRequest(BaseModel):
     """Request body for the export endpoint."""
@@ -22,7 +24,7 @@ class ExportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     todo_ids: list[int]
-    format: str
+    format: Literal["ics", "todoist_url"]
 
 
 def _normalize_dt(dt: datetime | None) -> datetime | None:
@@ -40,6 +42,31 @@ def _normalize_dt(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def _load_todos(session: Session, todo_ids: list[int]) -> list[Todo]:
+    """Fetch todos by id; raise 404 if any requested id is missing.
+
+    Empty ``todo_ids`` returns ``[]`` (caller handles empty-list semantics).
+    """
+    if not todo_ids:
+        return []
+    rows = session.query(Todo).filter(Todo.id.in_(todo_ids)).all()
+    if not rows:
+        raise HTTPException(404, _NOT_FOUND_MSG)
+    return rows
+
+
+def _to_export_dicts(rows: list[Todo]) -> list[dict[str, Any]]:
+    """Project Todo rows into the dict shape expected by export_ics/build_todoist_url."""
+    return [
+        {
+            "what": t.what,
+            "who": t.who,
+            "due_at": _normalize_dt(t.due_at),
+        }
+        for t in rows
+    ]
+
+
 @router.post("", response_model=None)
 def create_export(
     body: ExportRequest,
@@ -49,50 +76,13 @@ def create_export(
 
     Empty ``todo_ids`` returns 200 with an empty VCALENDAR (asking for
     nothing yields nothing). Requesting IDs that don't exist returns 404.
-    Unknown ``format`` values return 400.
+    Unknown ``format`` values are rejected by Pydantic with 422.
     """
+    rows = _load_todos(session, body.todo_ids)
+    todos_data = _to_export_dicts(rows)
     if body.format == "ics":
-        # Empty list short-circuits to an empty calendar — distinguish from
-        # the "all IDs unknown" case, which is a 404.
-        if not body.todo_ids:
-            return Response(
-                content=export_ics([]), media_type="text/calendar"
-            )
-        rows = (
-            session.query(Todo).filter(Todo.id.in_(body.todo_ids)).all()
-        )
-        if not rows:
-            raise HTTPException(404, "no todos found for given ids")
-        todos_data = [
-            {
-                "what": t.what,
-                "who": t.who,
-                "due_at": _normalize_dt(t.due_at),
-            }
-            for t in rows
-        ]
         return Response(content=export_ics(todos_data), media_type="text/calendar")
-
-    if body.format == "todoist_url":
-        rows = (
-            session.query(Todo).filter(Todo.id.in_(body.todo_ids)).all()
-        )
-        if not rows and body.todo_ids:
-            # Asked for specific IDs that don't exist → 404. An empty
-            # ``todo_ids`` list is allowed: build a URL with no text.
-            raise HTTPException(404, "no todos found for given ids")
-        todos_data = [
-            {
-                "what": t.what,
-                "who": t.who,
-                "due_at": _normalize_dt(t.due_at),
-            }
-            for t in rows
-        ]
-        return {"url": build_todoist_url(todos_data)}
-
-    logger.warning("unknown export format: %s", body.format)
-    raise HTTPException(400, f"unknown format: {body.format}")
+    return {"url": build_todoist_url(todos_data)}
 
 
 __all__ = ["router", "create_export", "ExportRequest", "build_todoist_url"]

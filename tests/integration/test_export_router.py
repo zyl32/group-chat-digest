@@ -6,7 +6,8 @@ Covers:
   nothing should yield an empty calendar, not an error.
 - ICS export when none of the requested IDs exist (404).
 - Todoist URL export (200, JSON with ``url``).
-- Unknown format (400).
+- Unknown format (422 — Pydantic rejects non-Literal values before the
+  handler runs).
 - Naive ``due_at`` normalization to UTC (mirrors T17 ``_serialize_dt``).
 
 Deviations from PLAN spec test snippets:
@@ -81,8 +82,13 @@ def test_export_todoist_url_format(client, in_memory_db):
     assert "交报告" in unquote(body["url"])
 
 
-def test_export_unknown_format_returns_400(client, in_memory_db):
-    """An unknown ``format`` value returns 400."""
+def test_export_unknown_format_returns_422(client, in_memory_db):
+    """An unknown ``format`` value returns 422.
+
+    ``format`` is a ``Literal["ics", "todoist_url"]``, so Pydantic rejects
+    any other value at the request-body validation layer (standard FastAPI
+    422 response) before the handler is invoked.
+    """
     in_memory_db.add(
         Todo(id=1, upload_id="u1", what="交报告", who="张三", state="pending")
     )
@@ -90,7 +96,7 @@ def test_export_unknown_format_returns_400(client, in_memory_db):
     r = client.post(
         "/api/exports", json={"todo_ids": [1], "format": "garbage"}
     )
-    assert r.status_code == 400
+    assert r.status_code == 422
 
 
 def test_export_ics_serializes_naive_due_at_as_utc(client, in_memory_db):
