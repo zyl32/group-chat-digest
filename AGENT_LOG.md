@@ -1298,3 +1298,75 @@
 - `4106abb` fix(todo-router): validate action names, normalize due_at to UTC, add 404 detail + tests
 
 ---
+
+## T18: Export Router
+
+**时间**：2026-08-05
+
+**派发 implementer subagent**（T14/T15/T16/T17 lessons 应用）：
+- 模型：sonnet
+- 任务：T18 Export Router — POST `/api/exports` 端点（ICS + Todoist URL）
+- 上下文提供：
+  - 现有 `app/services/export.py` 的 `export_ics()` 在 naive datetime 上 raise ValueError
+  - 复用 `app/routers.uploads.get_db`（不 inline engine）
+  - T17 `_serialize_dt` 模式（naive → assume UTC）
+  - T17 `ActionRequest` 模式（`ConfigDict(extra="forbid")`）
+  - `session.flush()` 不 `commit()`
+  - type hints + `__all__` + module logger + generic errors
+- 测试：7 个（spec 2 + 衍生 5：empty list / unknown ids / todoist_url / unknown format / naive due_at normalization）
+- 状态：DONE_WITH_CONCERNS
+  - 4 个 acceptable deviations：
+    1. `content-type` 用 `startswith("text/calendar")` 而非 `==`（Starlette 自动加 `; charset=utf-8`）
+    2. Todoist URL 测试用 `unquote(url)` 因 `quote()` percent-encodes CJK
+    3. `response_model=None` 因 `Response | dict` 联合返回类型（FastAPI 要求）
+    4. `build_todoist_url` 从 `app.routers.exports` re-export（让 spec 测试 `from app.routers.exports import build_todoist_url` 工作）
+  - 84 → 91 passed
+  - Commit `da63734` "feat(routers): add export router for ICS and Todoist URL"
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 7 个 required tests 全通过；full suite 91 passed；所有 spec-required patterns 全落地（`ConfigDict(extra="forbid")` / `Depends(get_db)` reuse / `_normalize_dt` mirrors T17 / `__all__` / module logger / type hints / `build_todoist_url` uses `urllib.parse.quote`）
+- 4 deviations 全部 acceptable 且 documented in test docstring
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：⚠️ Approved with fixes
+- Strengths：98 行 < 200；`__all__` + module logger + type hints；`ConfigDict(extra="forbid")`；测试 docstring 详尽（说明 deviations）；空 list vs unknown IDs 语义区分 thoughtful；`build_todoist_url` 正确 URL-encode
+- Important issues：
+  - **#1 DRY violation**：ICS branch 和 todoist_url branch 重复 query + dict construction（6 行 × 2）。修复：提取 `_load_todos(session, todo_ids) -> list[Todo]` + `_to_export_dicts(rows) -> list[dict]` 两个 helper，404 message 提取为 `_NOT_FOUND_MSG` 常量
+  - **#2 `format: str` 应为 `Literal["ics", "todoist_url"]`**：未知格式目前走到 manual `raise HTTPException(400, ...)` branch；用 Literal 让 Pydantic 直接 reject 为 422（FastAPI 标准 validation error），删除 dead code（manual 400 branch + `logger.warning`）
+- Minor issues（不阻断）：
+  - `_normalize_dt` duplicates T17 `_serialize_dt`（不同 return type: dt vs ISO string）— 提取到 `app/utils/time.py` `to_utc(dt)` 是 nice-to-have，v1 接受
+  - `build_todoist_url` 用 `t.get("what")` filter 但 `t["what"]` access（安全但稍混淆）— 风格，v1 接受
+  - `Response | dict` 联合返回 + `response_model=None` — FastAPI 限制，idiomatic，v1 接受
+  - `test_build_todoist_url` 是 unit test 在 integration 文件夹 — 风格，不阻断
+
+**派发 fix implementer**：
+- 模型：sonnet
+- 修复 Important #1：提取 `_load_todos` + `_to_export_dicts` + `_NOT_FOUND_MSG` 常量；endpoint 缩为 4 行核心逻辑
+- 修复 Important #2：`format: str` → `format: Literal["ics", "todoist_url"]`；删除 manual 400 branch + `logger.warning`；endpoint 末尾 `return {"url": build_todoist_url(todos_data)}` 是 todoist_url 唯一剩余 path
+- 测试更新：`test_export_unknown_format_returns_400` → `test_export_unknown_format_returns_422`（断言 422 + 更新 docstring）
+- 验证：91 passed 不变（rename，无 add/del）
+- Commit `b9af4bf` "refactor(export-router): DRY query/dict construction, Literal format enum for 422 validation"
+
+**语义保留验证**：
+- empty `todo_ids` + ICS → `_load_todos([])` 返回 `[]` → `export_ics([])` → empty VCALENDAR（200）✓ `test_export_ics_empty_returns_200`
+- empty `todo_ids` + todoist_url → `build_todoist_url([])` → URL with empty text（200）✓
+- nonexistent IDs `[999]` → `_load_todos` query 返回 `[]` → raise 404 ✓ `test_export_ics_unknown_ids_returns_404`
+- unknown format `"garbage"` → Pydantic Literal 校验 422 ✓ `test_export_unknown_format_returns_422`
+- naive due_at → `_normalize_dt` 假设 UTC → `export_ics` 收到 tz-aware → `DTSTART:20260810T000000Z` ✓ `test_export_ics_serializes_naive_due_at_as_utc`
+
+**学到的教训**：
+1. **Pydantic Literal 让 FastAPI 用 422 替代手动 400**：未知 enum 值让 Pydantic 在 validation 阶段 reject（422），而非 handler 内手动 `raise HTTPException(400, ...)`。好处：(a) 一致的 error response shape（FastAPI 默认 `{"detail":[...]}`）；(b) 删除 dead code（manual branch + logger.warning）；(c) OpenAPI schema 反映真实 accepted values。教训：当 input 是固定 enum 集合时，用 `Literal[...]` 而非 `str` + manual validation。
+2. **DRY 提取 helper 的时机**：两个 branch 重复 6 行（query + 404 check + dict construction）是 DRY violation signal。提取 2 个小 helper（`_load_todos` + `_to_export_dicts`）让 endpoint 主体缩到 4 行，每个 helper 单一职责。教训：当同一个 data pipeline 在 ≥2 个 branch 重复，立即提取 helper；不要等第 3 个 branch。
+3. **空 list vs unknown IDs 语义区分**：`todo_ids=[]` 表示"什么都不请求"→ 200 empty calendar（NOT 404）；`todo_ids=[999]` 表示"请求不存在的"→ 404。`_load_todos` 用 `if not todo_ids: return []` 短路 + `if not rows: raise 404` 区分两种 empty。教训：API 设计中"空集"与"未找到"是不同语义，应区分 status code。
+4. **`Response | dict` 联合返回类型 + `response_model=None`**：FastAPI endpoint 返回 `Response`（绕过序列化，用于 ICS 二进制）或 `dict`（JSON 序列化）时，必须 `response_model=None` 否则 FastAPI 尝试构造 `Response | dict` Pydantic model 失败。教训：混合 binary/JSON 响应的 endpoint 加 `response_model=None`，并在 docstring 说明两种 content-type。
+5. **`build_todoist_url` re-export 让测试 import 路径稳定**：spec 测试 `from app.routers.exports import build_todoist_url`，但函数定义在 `app/services/export.py`。`exports.py` 末尾 `__all__` 包含 `build_todoist_url` + `from app.services.export import build_todoist_url` 让 import 工作。教训：当 PLAN spec 的 import 路径与函数实际 location 不一致，re-export 比 modify spec 更稳。
+6. **Starlette `text/*` 自动加 `; charset=utf-8`**：`Response(media_type="text/calendar")` 实际 header 是 `text/calendar; charset=utf-8`，测试必须用 `startswith("text/calendar")` 而非 `==`。教训：测试 HTTP headers 时考虑 framework 的默认 behavior，用 prefix match 而非精确匹配。
+
+**T18 完成 commit 链**：
+- `da63734` feat(routers): add export router for ICS and Todoist URL
+- `b9af4bf` refactor(export-router): DRY query/dict construction, Literal format enum for 422 validation
+
+---
