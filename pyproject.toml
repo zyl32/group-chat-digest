@@ -13,6 +13,7 @@ dependencies = [
     "hydra-core>=1.3",
     "omegaconf>=2.3",
     "ics>=0.7",
+    "python-multipart>=0.0.32",
 ]
 
 [project.optional-dependencies]
