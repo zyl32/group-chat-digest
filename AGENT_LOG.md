@@ -1560,3 +1560,63 @@
 - `a080bdb` feat: add mock chat data generator and 3 demo datasets
 
 ---
+
+## T22: E2E Happy Path
+
+**时间**：2026-08-05
+
+**派发 implementer subagent**（T14/T17/T18/T19/T20 lessons 应用）：
+- 模型：sonnet
+- 任务：T22 E2E Happy Path — `/api/uploads/{id}/process` + `/api/uploads/{id}/digest` 端点 + E2E 测试
+- 上下文提供：
+  - T14 `get_db` dependency 复用模式（不 inline engine）
+  - T15 DigestService + T16 TodoExtractor 已实现，需 ParsedMessage-like 输入
+  - `get_provider(name)` factory 存在；`"mock"` 注册为 MockLLMAdapter
+  - **spec 的关键问题**：test 用 `mock_llm` fixture 程序响应，但 `process` 调 `get_provider("mock")` 创建 NEW MockLLMAdapter — 看不到 test 程序的响应。Fix：`monkeypatch.setattr("app.routers.uploads.get_provider", lambda name, **kw: mock_llm)`
+  - ParsedMessage 转换（Message ORM row → frozen dataclass）
+  - Idempotency：process 第二次返回 400
+- 测试：6 个（spec 1 + 衍生 5：unknown upload 404 / idempotent 400 / digest unknown 404 / fallback LLM / ICS after done action）
+- 状态：DONE
+  - 123 → 129 passed（+6 新测试，无回归）
+  - Commit `6c003f0` "feat: add upload process endpoint and E2E happy path test"
+- 关键发现：
+  - ICS exporter 用 VTODO（不是 VEVENT）— T10 实现，todo map to VTODO
+  - MockLLMAdapter substring matching：`complete()` join prompt text with spaces，check 任何 programmed substring 出现。"generate digest" 匹配 DigestService system prompt，"extract" 匹配 TodoExtractor system prompt
+  - venv isolation quirk：`D:\Anaconda\Lib\site-packages` 在 sys.path 前（含 ancient openai 0.x stub），shadow venv's openai>=1.30。Workaround：`uv run --extra dev pytest` 或确保 venv 优先
+
+**派发 combined spec + code quality reviewer**：
+- 模型：sonnet
+- 结论：✅ Approved（spec compliant + code quality 无 critical/important）
+- Spec checklist 全通过：tests/e2e/test_happy_path.py + 2 新端点 + full flow 覆盖（upload → process → digest → todos → action → export ICS）+ mock_llm + monkeypatch + T21 mock data
+- Code quality strengths：type hints `dict[str, Any]` + `__all__` 扩展 + `Depends(get_db)` 不 inline + idempotency 检查在 generate 前 + 404 path for missing upload AND upload-with-no-messages + ParsedMessage 转换 defensive `r.msg_id or f"m{r.id}"` + services flush + get_db commit on exit + 无 eval/exec + Conventional Commit
+- Specific concerns verified：
+  1. `get_provider` 作 function call（不是 attribute access）— monkeypatch 正确替换 module binding ✓
+  2. idempotency 在 generate 前查 Digest row ✓
+  3. `r.msg_id or f"m{r.id}"` defensive fallback ✓
+  4. missing upload → 404；upload with no messages → 404 ✓
+  5. `get_digest` response 含 `summary_blocks`/`model_used`/`date`/`window`/`id`/`upload_id` ✓
+  6. fallback test 断言 `topic == "错误"`（matches FALLBACK_BLOCK）+ `"待确认" in t["what"]` + `state == "pending"` ✓
+  7. E2E tests 独立（each uploads own file + in_memory_db fresh per test）✓
+- Minor issues（不阻断）：
+  - `test_full_flow_exports_ics_after_done_action` docstring 说 "VEVENT" 但断言 `BEGIN:VTODO`。**已修复**：docstring 改为 "VTODO"
+  - `process_upload`/`get_digest` 用 `session.get`/`session.query` — fine for sync SQLAlchemy，consistent with `get_status`
+
+**修复 Minor docstring**：
+- 编排器直接编辑：`VEVENT is emitted` → `VTODO is emitted`；`in the VEVENT` → `in the VTODO`
+- Commit `26d3c2d` "docs(test): correct VEVENT→VTODO in ICS export test docstring"
+
+**学到的教训**：
+1. **factory 函数的 test seam 是 monkeypatch module binding**：`get_provider(name)` 是 factory，test 用 `mock_llm` fixture 程序响应，但 factory 创建 NEW instance 看不到。Fix：`monkeypatch.setattr("app.routers.uploads.get_provider", lambda name, **kw: mock_llm)` 替换 module binding。endpoint 在 call time 解析 `get_provider`（不是 import time closure），所以 monkeypatch 工作。教训：factory pattern 的 test seam 是 module-level function binding，monkeypatch 替换它即可注入 mock instance。
+2. **ORM row → ParsedMessage 转换让 contract 显式**：`ParsedMessage(sender=r.sender, content=r.content, timestamp=r.timestamp, msg_id=r.msg_id or f"m{r.id}")` 把 ORM row 转 frozen dataclass。services 用 `.sender`/`.content` attribute access，Message ORM row 也有这些 attribute，但 ParsedMessage 让 contract 显式 + 避免 ORM session detachment issues。教训：service layer 的 input type 应该是 explicit dataclass / Protocol，不是 ORM row；router layer 做 conversion。
+3. **idempotency 在 generate 前查 existing digest**：`session.query(Digest).filter(Digest.upload_id == upload_id).first()` 在调 `DigestService.generate()` 前检查，若已存在返回 400。比依赖 DB unique constraint 报 IntegrityError 更友好（前者返回 explicit 400 + message，后者 500 + DB error）。教训：idempotency 检查在业务 layer（query first），不依赖 DB constraint 报错。
+4. **E2E 测试覆盖 fallback path**：`test_process_with_fallback_llm_still_succeeds` 程序 mock_llm 返回 invalid JSON，验证 digest 仍有 FALLBACK_BLOCK（topic="错误"）+ todos 是 "待确认"。这覆盖 T15/T16 的 resilient fallback invariant。教训：E2E 不仅测 happy path，要测 fallback path — 验证 LLM flaky 时系统仍 functional。
+5. **ICS 用 VTODO 不是 VEVENT**：T10 ICS exporter 把 todo map to VTODO（RFC 5545 VTODO component），不是 VEVENT。test docstring 原写 "VEVENT" 是 mistake。教训：读 spec/test 时 verify ICS component type；todos → VTODO（任务），events → VEVENT（日历事件）。
+6. **`get_db` dependency 在 test override 时不 commit**：production `get_db` 用 `with get_session(engine) as session: yield session`，`get_session.__exit__` commit。test override 为 `def _override_get_db(): yield session`（不 commit）。所以 test 内同一 session 看得到 pending adds（auto-flush on query），但 cross-request 不 commit。E2E test 在同一 test 内多次请求，都用同一 `in_memory_db` session，pending adds 可见。教训：test override `get_db` 时，session 不 commit；production 才 commit；test 内多请求共享 session 是 test isolation pattern。
+7. **MockLLMAdapter substring matching 是 test leverage**：`complete()` join prompt text + check 任何 programmed substring 出现。DigestService system prompt 含 "generate digest"，TodoExtractor system prompt 含 "extract"。test 用 `set_response("generate digest", ...)` + `set_response("extract", ...)` 让 mock 自动路由响应到正确 service。教训：mock LLM 用 substring matching 让 test 不需精确 prompt match，只需 unique substring key。
+8. **venv isolation quirk 是 local artifact**：`D:\Anaconda\Lib\site-packages` 在 sys.path 前 shadow venv's openai。Workaround：`uv run --extra dev pytest` 或确保 venv 优先。这不是 code issue，是 local env config。教训：subagent 报告的 env issue 要 verify 是 local 还是 code；用 `uv run` 而非裸 `pytest` 让 venv 优先。
+
+**T22 完成 commit 链**：
+- `6c003f0` feat: add upload process endpoint and E2E happy path test
+- `26d3c2d` docs(test): correct VEVENT→VTODO in ICS export test docstring
+
+---
