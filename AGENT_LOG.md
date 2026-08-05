@@ -1445,3 +1445,70 @@
 - 准备合并到 main
 
 ---
+
+## T20: 前端（Open Design 静态站）
+
+**时间**：2026-08-05
+
+**派发 implementer subagent**：
+- 模型：sonnet
+- 任务：T20 静态前端 — 5 HTML 页面 + styles.css + main.py mount
+- 上下文提供：
+  - 后端 API 全部已合并（T13-T19）— uploads/todos/exports/credentials
+  - T14 upload 是同步的（不需要 polling）
+  - §3.1 硬约束：setup.html 必须 `<input type="password">`，status 只显示 `configured` boolean
+  - "minimal-static" Open Design 系统：极简 CSS，无框架
+  - vanilla JS only，无 CDN，无 Google Fonts，无外部资源
+  - `lang="zh"` + `<meta viewport>`
+  - T15 没暴露 digest list/detail endpoint — digests.html 和 digest_detail.html 是 placeholder，文档化 v1 limitation
+- 测试：8 个（spec 1 + 衍生 7：css served / setup served / todos served / digests served / digest_detail served / index links to setup / index has upload form）
+- 状态：DONE
+  - 104 → 112 passed（+8 新测试，无回归）
+  - Commit `a569438` "feat(frontend): add minimal static site with Open Design styling"
+
+**派发 spec compliance reviewer**：
+- 模型：sonnet
+- 结论：✅ Spec compliant
+- 全部 checklist 通过：5 HTML + CSS + main.py mount + 8 tests
+- setup.html `type="password"` + `autocomplete="off"` + `spellcheck="false"` ✓
+- setup.html JS GETs `/api/credentials/llm_api_key/status` 显示 only `configured` boolean ✓
+- setup.html POSTs `{"value": ...}` + DELETEs ✓
+- todos.html GETs `/api/todos` + action buttons + export ICS + export Todoist ✓
+- 全部 HTML `lang="zh"` + `<meta viewport>` ✓
+- 无外部资源（grep `https://`/`cdn`/`googleapis`/`fonts.` 全无）✓
+- vanilla JS IIFE ✓
+- styles.css system fonts ✓
+- 2 deviations acceptable（digests.html / digest_detail.html 文档化 v1 limitation）
+
+**派发 code quality reviewer**：
+- 模型：sonnet
+- 结论：⚠️ Approved with fixes
+- Strengths：setup.html §3.1 全执行（no console.log / no localStorage / no URL query leak / no innerHTML of value / form reset after save / `type="password"` + `autocomplete="off"`）；全部 JS IIFE wrap；addEventListener 无 inline onclick；try/catch + `!r.ok`；todos.html 空状态 + action 失败 retry；Python route handler type hints + `_serve` DRY + `_FRONTEND_DIR` constant + `__all__`；CSS 100 行 system fonts + CSS variables + responsive
+- Issues：
+  - **[Important]**：`todos.html:155` `exportStatus.innerHTML = 'Todoist URL: <a href="' + j.url + '"...>打开</a>'` — 即使 `j.url` 后端控制，innerHTML 拼接是 XSS risk pattern。修复：用 DOM construction（`replaceChildren` + `document.createElement('a')` + `Object.assign` 设 href/textContent）
+  - **[Minor]**：`index.html:60` `JSON.parse(text)` 无 try/catch — unhandled exception on non-JSON success response。Acceptable for v1
+  - **[Minor]**：跨页面 nav 链接数 + 顺序不一致（digest_detail 4 links / digests 3 links）。Cognitive consistency，v1 接受
+  - **[Minor]**：tests 只 verify index content substring；digest pages 只 200。可加 minimal content 断言（`v1` or `摘要`）+ `text/html` content-type 断言。Deferred
+  - **[Minor]**：`app/main.py` 无显式 404 handler — FastAPI default 行为 acceptable，no action
+  - **[Minor]**：styles.css `input,select,textarea,button` 全 `width:100%` 但 button 立即 `width:auto` 覆盖。Slightly redundant，acceptable
+
+**修复 Important XSS**：
+- 编排器直接编辑 `app/frontend/todos.html`：`exportStatus.innerHTML = ...` → `exportStatus.replaceChildren(document.createTextNode('Todoist URL: '), Object.assign(document.createElement('a'), {href: j.url, target: '_blank', rel: 'noopener', textContent: '打开'}))`
+- Commit `f6a3028` "fix(frontend): use DOM construction for Todoist URL link to prevent innerHTML XSS"
+- 验证：8 static-mount tests 仍 passed
+
+**学到的教训**：
+1. **innerHTML 是 XSS risk pattern，即使 source 是 trusted backend**：`exportStatus.innerHTML = '...<a href="' + j.url + '"...>...'` 即使 `j.url` 来自后端 `build_todoist_url()`（受控），innerHTML 拼接是 fragile pattern — 若后端有 bug 或被注入，恶意 URL 含 `"` 或 HTML 会执行。修复用 DOM construction：`replaceChildren(textNode, createElement('a') + Object.assign({href, textContent}))`。教训：永远不用 `innerHTML` 拼接外部数据；用 `textContent` + `createElement` + `replaceChildren`。
+2. **§3.1 setup.html 的 no-leak invariant 包括 client-side**：不仅 server 不 log value，client 也不能 `console.log(value)`、`localStorage.setItem(value)`、URL query string、`innerHTML(value)`。setup.html form reset after save（`form.reset()`）让 value 不 linger in DOM。`autocomplete="off"` + `spellcheck="false"` 减少 browser 持久化。教训：secret 的 no-leak 是 cross-layer invariant，server + client + DOM 全要 enforce。
+3. **vanilla JS IIFE 是 minimal-static 模式**：所有 JS 包在 `(function(){...})()` IIFE 中避免 global scope 污染。`addEventListener` 不用 inline `onclick=`。fetch 用 try/catch + `!r.ok` 检查。教训：minimal-static 不只 CSS minimal，JS 也 minimal — 无 framework、无 build step、无 module system，但 IIFE + addEventListener + try/catch 是 baseline discipline。
+4. **同步 upload 简化 client**：T14 upload 是同步的（parse + persist in-line），所以 index.html 不需 polling `/api/uploads/{id}/status` — 直接 display `{"upload_id":..., "status":"done"}`。spec 原 template 有 `setInterval(...)` polling，但 v1 直接显示 result 更简单。教训：backend 同步简化 client，但如果 backend 异步，client polling 是 acceptable fallback；选同步还是异步影响 client 复杂度。
+5. **v1 limitation 应文档化在页面本身**：T15 没暴露 `GET /api/digests` list/detail endpoint，digests.html 和 digest_detail.html 不能 fetch 真实数据。与其 build non-existent endpoint call，不如在页面本身写 "v1 后端未提供此端点 — 请通过上传后的链接访问"。教训：placeholder 页面应显式说明 limitation，不要假装 functional；v2 再补 endpoint。
+6. **`_serve(name)` helper DRY for FileResponse routes**：5 个 route handler 都 `return FileResponse(_FRONTEND_DIR / name)`，提取 `_serve(name: str) -> FileResponse` 让每个 handler 缩到 1 行。`_FRONTEND_DIR = Path(__file__).parent / "frontend"` 模块级常量。教训：当 ≥2 个 route 重复 same FileResponse pattern，立即提取 helper + 路径常量。
+7. **DOM construction 的 `Object.assign(createElement('a'), {href, textContent})` idiom**：`Object.assign(document.createElement('a'), {href: j.url, target: '_blank', rel: 'noopener', textContent: '打开'})` 一次性设多个属性，比逐行 `a.href=...; a.target=...; a.rel=...; a.textContent=...` 简洁。`replaceChildren(textNode, a)` 一次替换 children。教训：DOM construction 用 `Object.assign` + `replaceChildren` 是 idiomatic vanilla JS。
+8. **8 tests 而非 spec 的 1 test 是 boundary coverage**：spec 只要求 `test_index_html_served`，但加 7 个 boundary tests（CSS served / 5 pages served / index links to setup / index has upload form）catches regression 如 forgotten page 或 broken mount。教训：static site 的 test 不只是 "200 OK"，要 assert content（`"Group Chat Digest" in r.text`）+ 所有 served pages + 关键 link/form 存在。
+
+**T20 完成 commit 链**：
+- `a569438` feat(frontend): add minimal static site with Open Design styling
+- `f6a3028` fix(frontend): use DOM construction for Todoist URL link to prevent innerHTML XSS
+
+---
