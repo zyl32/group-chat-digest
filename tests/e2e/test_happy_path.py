@@ -196,11 +196,11 @@ def test_process_with_fallback_llm_still_succeeds(client, mock_llm, monkeypatch)
 
 
 def test_full_flow_exports_ics_after_done_action(client, mock_llm, monkeypatch):
-    """Full flow: export ICS after marking a todo done — VEVENT is emitted.
+    """Full flow: export ICS after marking a todo done — VTODO is emitted.
 
     Note: the ICS exporter does not filter by state (it exports whatever
     the request lists), so we assert that the done todo's summary appears
-    in the VEVENT — verifying end-to-end data flow rather than ICS
+    in the VTODO — verifying end-to-end data flow rather than ICS
     state-filtering behavior.
     """
     _configure_credential(monkeypatch)
