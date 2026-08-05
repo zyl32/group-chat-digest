@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>待办 — Group Chat Digest</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <h1>Todo 待办列表</h1>
+    <nav>
+      <a href="/">上传</a> |
+      <a href="/setup.html">设置 API Key</a> |
+      <a href="/digests.html">摘要</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <h2>导出</h2>
+      <p class="muted">勾选下方待办或选择 全部，再选择导出目标。</p>
+      <button type="button" id="select-all">全选</button>
+      <button type="button" id="export-ics">导出 ICS</button>
+      <button type="button" id="export-todoist" class="secondary">导出 Todoist</button>
+      <div id="export-status" class="status" role="status" aria-live="polite"></div>
+    </section>
+    <section>
+      <h2>待办事项</h2>
+      <p id="loading" class="muted">加载中...</p>
+      <ul id="todo-list" class="todo-list"></ul>
+    </section>
+  </main>
+  <script>
+    (function () {
+      var listEl = document.getElementById('todo-list');
+      var loadingEl = document.getElementById('loading');
+      var exportStatus = document.getElementById('export-status');
+      var todos = [];
+
+      function stateLabel(s) {
+        return ({ pending: '待处理', done: '已完成', ignored: '已忽略', snoozed: '已推迟', active: '激活' }[s] || s);
+      }
+
+      function render() {
+        loadingEl.style.display = todos.length ? 'none' : 'block';
+        loadingEl.textContent = todos.length ? '' : '暂无待办';
+        listEl.innerHTML = '';
+        todos.forEach(function (t) {
+          var li = document.createElement('li');
+          var left = document.createElement('div');
+          var check = document.createElement('input');
+          check.type = 'checkbox';
+          check.dataset.id = String(t.id);
+          var text = document.createElement('span');
+          text.style.marginLeft = '0.5rem';
+          text.textContent = '[' + stateLabel(t.state) + '] '
+            + (t.what || '(无内容)')
+            + (t.who ? ' — @' + t.who : '')
+            + (t.due_at ? ' (due ' + t.due_at + ')' : '');
+          left.appendChild(check);
+          left.appendChild(text);
+
+          var actions = document.createElement('div');
+          actions.className = 'actions';
+          [['done', '完成'], ['ignored', '忽略'], ['snoozed', '推迟'], ['reactivate', '重新激活']].forEach(function (pair) {
+            var b = document.createElement('button');
+            b.textContent = pair[1];
+            b.type = 'button';
+            b.className = 'secondary';
+            b.addEventListener('click', function () { doAction(t.id, pair[0]); });
+            actions.appendChild(b);
+          });
+
+          li.appendChild(left);
+          li.appendChild(actions);
+          listEl.appendChild(li);
+        });
+      }
+
+      async function load() {
+        try {
+          var r = await fetch('/api/todos');
+          if (!r.ok) { loadingEl.textContent = '加载失败: ' + r.status; return; }
+          todos = await r.json();
+          render();
+        } catch (err) {
+          loadingEl.textContent = '网络错误: ' + err.message;
+        }
+      }
+
+      async function doAction(id, action) {
+        try {
+          var r = await fetch('/api/todos/' + id + '/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: action })
+          });
+          if (!r.ok) { exportStatus.textContent = '操作失败: ' + r.status; exportStatus.className = 'status err'; return; }
+          await load();
+        } catch (err) {
+          exportStatus.textContent = '网络错误: ' + err.message;
+          exportStatus.className = 'status err';
+        }
+      }
+
+      function selectedIds() {
+        var ids = [];
+        listEl.querySelectorAll('input[type=checkbox]:checked').forEach(function (c) {
+          ids.push(parseInt(c.dataset.id, 10));
+        });
+        return ids;
+      }
+
+      document.getElementById('select-all').addEventListener('click', function () {
+        var boxes = listEl.querySelectorAll('input[type=checkbox]');
+        var allChecked = Array.prototype.every.call(boxes, function (b) { return b.checked; });
+        boxes.forEach(function (b) { b.checked = !allChecked; });
+      });
+
+      document.getElementById('export-ics').addEventListener('click', async function () {
+        var ids = selectedIds();
+        if (!ids.length) { exportStatus.textContent = '请先勾选待办'; exportStatus.className = 'status err'; return; }
+        try {
+          var r = await fetch('/api/exports', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ todo_ids: ids, format: 'ics' })
+          });
+          if (!r.ok) { exportStatus.textContent = '导出失败: ' + r.status; exportStatus.className = 'status err'; return; }
+          var blob = await r.blob();
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url; a.download = 'todos.ics'; document.body.appendChild(a); a.click();
+          setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 0);
+          exportStatus.textContent = 'ICS 已下载';
+          exportStatus.className = 'status ok';
+        } catch (err) {
+          exportStatus.textContent = '网络错误: ' + err.message;
+          exportStatus.className = 'status err';
+        }
+      });
+
+      document.getElementById('export-todoist').addEventListener('click', async function () {
+        var ids = selectedIds();
+        if (!ids.length) { exportStatus.textContent = '请先勾选待办'; exportStatus.className = 'status err'; return; }
+        try {
+          var r = await fetch('/api/exports', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ todo_ids: ids, format: 'todoist_url' })
+          });
+          if (!r.ok) { var t = await r.text(); exportStatus.textContent = '导出失败: ' + r.status + ' ' + t; exportStatus.className = 'status err'; return; }
+          var j = await r.json();
+          if (j.url) {
+            exportStatus.innerHTML = 'Todoist URL: <a href="' + j.url + '" target="_blank" rel="noopener">打开</a>';
+            exportStatus.className = 'status ok';
+            window.open(j.url, '_blank', 'noopener');
+          } else {
+            exportStatus.textContent = '未返回 URL';
+            exportStatus.className = 'status err';
+          }
+        } catch (err) {
+          exportStatus.textContent = '网络错误: ' + err.message;
+          exportStatus.className = 'status err';
+        }
+      });
+
+      load();
+    })();
+  </script>
+</body>
+</html>

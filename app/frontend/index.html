@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>群聊摘要与待办提取器</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <h1>Group Chat Digest</h1>
+    <nav>
+      <a href="/setup.html">设置 API Key</a> |
+      <a href="/todos.html">待办</a> |
+      <a href="/digests.html">摘要</a>
+    </nav>
+  </header>
+  <main>
+    <section id="upload">
+      <h2>上传群聊导出</h2>
+      <p class="muted">支持微信 JSON、飞书 JSON 和纯文本格式。上传后后端会同步解析并提取摘要与待办。</p>
+      <form id="upload-form" enctype="multipart/form-data">
+        <label for="file">选择文件</label>
+        <input type="file" name="file" id="file" accept=".json,.txt" required>
+
+        <label for="fmt">导出格式</label>
+        <select name="fmt" id="fmt">
+          <option value="wechat">微信 JSON</option>
+          <option value="feishu">飞书 JSON</option>
+          <option value="plain">纯文本</option>
+        </select>
+
+        <button type="submit">上传</button>
+      </form>
+      <div id="upload-status" class="status" role="status" aria-live="polite"></div>
+    </section>
+    <section>
+      <h2>下一步</h2>
+      <p>上传成功后，请前往 <a href="/todos.html">待办列表</a> 查看提取的待办事项，或导出 ICS / Todoist。</p>
+      <p>首次使用需先 <a href="/setup.html">配置 LLM API Key</a>。</p>
+    </section>
+  </main>
+  <script>
+    (function () {
+      var form = document.getElementById('upload-form');
+      var status = document.getElementById('upload-status');
+      form.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        var fd = new FormData(form);
+        status.textContent = '上传中...';
+        status.className = 'status';
+        try {
+          var r = await fetch('/api/uploads', { method: 'POST', body: fd });
+          var text = await r.text();
+          if (!r.ok) {
+            status.textContent = '上传失败: ' + r.status + ' ' + text;
+            status.className = 'status err';
+            return;
+          }
+          var j = JSON.parse(text);
+          status.textContent = '上传成功，ID: ' + j.upload_id + '，状态: ' + j.status
+            + '。前往 待办 查看结果。';
+          status.className = 'status ok';
+        } catch (err) {
+          status.textContent = '网络错误: ' + err.message;
+          status.className = 'status err';
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

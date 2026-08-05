@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>设置 API Key — Group Chat Digest</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <h1>设置 LLM API Key</h1>
+    <nav>
+      <a href="/">上传</a> |
+      <a href="/todos.html">待办</a> |
+      <a href="/digests.html">摘要</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <h2>凭据状态</h2>
+      <p id="cred-status" class="muted">检查中...</p>
+      <p class="muted">
+        服务端只保存是否已配置（布尔值），永远不会回显 key 的值本身。
+        如需更新，直接覆盖；如需禁用，点击清除。
+      </p>
+    </section>
+    <section>
+      <h2>录入 API Key</h2>
+      <form id="key-form" autocomplete="off">
+        <label for="api-key">API Key</label>
+        <input type="password" name="value" id="api-key"
+          autocomplete="off" spellcheck="false" placeholder="sk-..." required>
+
+        <button type="submit">保存</button>
+        <button type="button" id="clear-btn" class="danger">清除</button>
+      </form>
+      <div id="key-status" class="status" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+  <script>
+    (function () {
+      var statusEl = document.getElementById('cred-status');
+      var keyStatus = document.getElementById('key-status');
+      var form = document.getElementById('key-form');
+      var clearBtn = document.getElementById('clear-btn');
+
+      async function refreshStatus() {
+        try {
+          var r = await fetch('/api/credentials/llm_api_key/status');
+          if (!r.ok) {
+            statusEl.textContent = '查询失败: ' + r.status;
+            statusEl.className = 'status err';
+            return;
+          }
+          var j = await r.json();
+          statusEl.textContent = j.configured
+            ? '已配置 API Key，可正常使用。'
+            : '尚未配置 API Key。';
+          statusEl.className = j.configured ? 'status ok' : 'status err';
+        } catch (err) {
+          statusEl.textContent = '网络错误: ' + err.message;
+          statusEl.className = 'status err';
+        }
+      }
+
+      form.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        var value = document.getElementById('api-key').value;
+        if (!value) {
+          keyStatus.textContent = '请输入 key';
+          keyStatus.className = 'status err';
+          return;
+        }
+        keyStatus.textContent = '保存中...';
+        keyStatus.className = 'status';
+        try {
+          var r = await fetch('/api/credentials/llm_api_key', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: value })
+          });
+          if (!r.ok) {
+            keyStatus.textContent = '保存失败: ' + r.status;
+            keyStatus.className = 'status err';
+            return;
+          }
+          keyStatus.textContent = '已保存';
+          keyStatus.className = 'status ok';
+          form.reset();
+          refreshStatus();
+        } catch (err) {
+          keyStatus.textContent = '网络错误: ' + err.message;
+          keyStatus.className = 'status err';
+        }
+      });
+
+      clearBtn.addEventListener('click', async function () {
+        if (!confirm('确认清除已存储的 API Key？')) return;
+        keyStatus.textContent = '清除中...';
+        keyStatus.className = 'status';
+        try {
+          var r = await fetch('/api/credentials/llm_api_key', { method: 'DELETE' });
+          if (!r.ok) {
+            keyStatus.textContent = '清除失败: ' + r.status;
+            keyStatus.className = 'status err';
+            return;
+          }
+          keyStatus.textContent = '已清除';
+          keyStatus.className = 'status ok';
+          refreshStatus();
+        } catch (err) {
+          keyStatus.textContent = '网络错误: ' + err.message;
+          keyStatus.className = 'status err';
+        }
+      });
+
+      refreshStatus();
+    })();
+  </script>
+</body>
+</html>

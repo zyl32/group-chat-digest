@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>摘要列表 — Group Chat Digest</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <h1>Digest 摘要列表</h1>
+    <nav>
+      <a href="/">上传</a> |
+      <a href="/setup.html">设置 API Key</a> |
+      <a href="/todos.html">待办</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <h2>暂无摘要列表端点</h2>
+      <p class="muted">
+        v1 后端（T15）目前未提供 <code>GET /api/digests</code> 列表端点，
+        摘要在上传流程内同步生成并落入待办。
+        请通过上传后的链接或待办列表查看提取结果。
+      </p>
+      <p>
+        <a href="/">返回上传</a> |
+        <a href="/todos.html">查看待办</a>
+      </p>
+      <p class="muted">
+        如已上传，可手动访问
+        <code>/digest_detail.html?upload_id=...</code> 查看摘要详情页（v1 仅显示提示）。
+      </p>
+    </section>
+  </main>
+</body>
+</html>
