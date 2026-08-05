@@ -1680,3 +1680,65 @@
 - `1cb8385` build: add Dockerfile, docker-compose, and CI docker-build job
 
 ---
+
+## T24: Fly.io 部署
+
+**时间**：2026-08-06
+
+**派发 implementer subagent**：
+- 模型：sonnet
+- 任务：T24 fly.toml + README deployment instructions + CI deploy job
+- 上下文提供：
+  - T23 Dockerfile 已 ready（port 8000）
+  - Fly.io config：app name / primary_region / build / http_service / vm / auto_stop_machines
+  - `internal_port = 8000` must match Dockerfile EXPOSE
+  - `[[mounts]]` for `/app/data` SQLite persistence（Fly machines ephemeral）
+  - `auto_stop_machines = true` + `min_machines_running = 0` 成本优化
+  - CI `deploy` job gated on `github.ref == 'refs/heads/main'` + `secrets.FLY_API_TOKEN`
+  - 不在 fly.toml bake secrets（只 LLM_PROVIDER=mock 非 secret）
+  - `unit-test` job name 保留（§五-6）
+  - OS keyring 在 Fly.io Linux 不可用 — 限制文档化（v1.1 stretch: env-var vault）
+- 状态：DONE
+  - fly.toml + README rewrite + CI deploy job
+  - TOML + YAML 验证通过
+  - Commit `71d22e2` "deploy: configure Fly.io with auto-stop, volume mount, and CI deploy job"
+  - **未实际部署**（无 Fly.io 账号）— README 文档化首次部署需用户手动 `fly deploy`
+
+**派发 combined spec + code quality reviewer**：
+- 模型：sonnet
+- 结论：✅ Approved with minor (non-blocking)
+- Spec checklist 全通过：fly.toml + README URL + CI deploy job（needs docker-build, if main, fly deploy --remote-only, FLY_API_TOKEN）
+- Code quality strengths：fly.toml 注释解释 "why"（数据卷持久化 / Mock LLM default / app name collision）✓；README 文档化 credential vault 限制 + v1.1 stretch 诚实范围 ✓；CI deploy job 用 `superfly/flyctl-actions/setup-flyctl@master` 上游推荐 ✓；`unit-test` job name 保留 ✓；README CI job 矩阵表格清晰 ✓；no secrets in fly.toml/README/ci.yml ✓
+- Minor issues（不阻断）：
+  - app name 冲突风险 — README 首次部署 section 未说明若名占用需改名 + 更新 URL。**已修复**：README 加 "> 应用名冲突：若 group-chat-digest 在 Fly.io 上已被占用，请修改 fly.toml 的 app 字段..."
+  - 数据卷 per-region caveat 未在 README 说明 — fly.toml 注释提到持久化但未提 per-region。**已修复**：fly.toml 注释加 "NOTE: Fly volumes are per-region. If primary_region is changed, the volume stays in the original region — migrate via fly volumes commands or accept data loss."
+  - fly.toml 缺 `version = "1"` — Fly 新 schema 推荐。**已修复**：加 `version = "1"` 顶层
+  - CI deploy job 无 working-directory — `fly deploy` 在 checkout root 运行，fine
+
+**修复 3 个 Minor doc tweaks**：
+- 编排器直接编辑：fly.toml 加 `version = "1"` + per-region volume caveat 注释；README 加 app name 冲突说明
+- 验证 TOML + YAML UTF-8 仍 valid
+- Commit `e93cde4` "docs(deploy): document app-name collision + per-region volume caveat, add fly.toml version=1"
+
+**学到的教训**：
+1. **`fly.toml` `version = "1"` 是新 schema 推荐字段**：Fly.io 2024+ 推荐顶层 `version = "1"` 声明配置 schema version。缺省时 Fly 运行时推断 + 警告。加 `version = "1"` 屏蔽警告。教训：读 Fly.io 当前 schema 文档，加 version 字段避免 deprecation warning。
+2. **`[[mounts]]` 是 Fly.io volume 持久化关键**：Fly machines 是 ephemeral（每次 deploy 重建 filesystem）。`/app/data/db/app.db` 不挂载则丢。`source = "data_volume"` + `destination = "/app/data"` 让 SQLite DB 跨 deploy 持久。教训：任何 stateful 容器（DB / uploaded files）在 Fly.io 必须挂载 volume；ephemeral filesystem 是 default。
+3. **Fly volumes 是 per-region**：volume 绑定 primary_region。若改 region，volume 留原 region（数据不可见）。需 `fly volumes` 命令迁移或接受数据丢失。教训：volume 是 region-scoped resource；改 region 要先迁移 volume。
+4. **`auto_stop_machines = true` + `min_machines_running = 0` 是单用户 app 成本优化**：闲置时 Fly 自动停 machine（只收 storage 费用），有请求时 auto_start。`min_machines_running = 0` 允许完全停机。单用户 / 低流量 app 用此配置月费 ~$0-2。教训：成本优化用 auto_stop + min_machines_running=0；高流量用 min_machines_running >= 1 避免 cold start。
+5. **`fly deploy --remote-only` 让 Fly 远程构建**：CI runner 不需本地 docker build；Fly.io 远程 BuildKit 构建。`--remote-only` flag 让 flyctl push source 到 Fly.io 远程构建。CI 不需 setup-buildx-action。教训：CI deploy 用 `--remote-only` 简化，避免 runner 装 docker。
+6. **CI deploy job gating on `github.ref == 'refs/heads/main'`**：PR 不触发 deploy（避免每次 PR 都部署）。只 main push 触发。`if: github.ref == 'refs/heads/main'` 是 PR-safe gating。教训：deploy job 必须只在 main 触发，避免 PR 部署到生产。
+7. **`secrets.FLY_API_TOKEN` 是 GitHub Secret**：用户在 repo Settings → Secrets → Actions 配置 `FLY_API_TOKEN`（本地 `fly tokens create deploy -a <app>` 生成）。CI 通过 `secrets.FLY_API_TOKEN` 引用，不硬编码。未配置时 deploy job 失败但不影响 unit-test/docker-build。教训：CI secret 用 GitHub Actions secrets，不进 git；job 失败应 graceful 不阻塞其他 job。
+8. **OS keyring 在 Fly.io Linux 不可用**：T13 `OSKeyringVault` 用 `keyring` 库，Linux 无桌面 keyring 后端时 `get_password` 返回 None（status 显示 unconfigured）+ `set_password` raise KeyringError（store 500）。Fly.io 生产需 env-var vault（`fly secrets set DEEPSEEK_API_KEY=...` + 扩展 LLM factory 从 env 读取）。这是 v1.1 stretch goal，本期文档化限制。教训：OS keyring 在云部署不可用；生产 credential management 需 env-var / KMS / 加密文件 vault backend。
+
+**T24 完成 commit 链**：
+- `71d22e2` deploy: configure Fly.io with auto-stop, volume mount, and CI deploy job
+- `e93cde4` docs(deploy): document app-name collision + per-region volume caveat, add fly.toml version=1
+
+**实际部署状态**：未部署（无 Fly.io 账号）。用户需：
+1. `curl -L https://fly.io/install.sh | sh` 装 flyctl
+2. `fly auth login`
+3. `fly deploy` 首次创建 app
+4. 在 GitHub repo Settings → Secrets → Actions 加 `FLY_API_TOKEN`（`fly tokens create deploy -a group-chat-digest` 生成）
+5. 后续 main push 自动触发 CI deploy
+
+---
