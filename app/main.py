@@ -6,10 +6,11 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import credentials, exports, health, todos, uploads
+from app.routers import credentials, digests, exports, health, todos, uploads
 
 app = FastAPI(title="Group Chat Digest")
 app.include_router(uploads.router)
+app.include_router(digests.router)
 app.include_router(todos.router)
 app.include_router(exports.router)
 app.include_router(credentials.router)
