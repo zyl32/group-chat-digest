@@ -1,0 +1,35 @@
+# VCS / CI / tooling
+.git
+.github
+.superpowers
+.claude
+.gitignore
+.gitattributes
+
+# Python build artifacts
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+
+# Tests are not needed in the production image (mock data is kept for manual smoke).
+tests
+
+# Local-only runtime state (avoid baking dev DBs/uploads into the image).
+data/uploads/*
+data/db/*.db
+data/db/*.db-journal
+data/db/*.sqlite
+
+# Docs / planning (kept in repo, not in image).
+README.md
+AGENT_LOG.md
+PLAN.md
+SPEC.md
+*.md
+
+# OS-specific noise.
+Thumbs.db
+.DS_Store

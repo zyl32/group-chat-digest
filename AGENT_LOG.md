@@ -1620,3 +1620,63 @@
 - `26d3c2d` docs(test): correct VEVENT→VTODO in ICS export test docstring
 
 ---
+
+## T23: Dockerfile + docker-compose
+
+**时间**：2026-08-06
+
+**派发 implementer subagent**：
+- 模型：sonnet
+- 任务：T23 Dockerfile + docker-compose + .dockerignore + CI docker-build job
+- 上下文提供：
+  - python:3.12-slim base
+  - uv 包管理器
+  - app/scripts/run/data 目录 COPY
+  - EXPOSE 8000 + CMD uvicorn
+  - non-root user（security best practice）
+  - layer caching（deps before app code）
+  - `--frozen` flag（lockfile must match）
+  - .dockerignore 排除 .git/.venv/tests/__pycache__
+  - CI `docker-build` job（名称必须是 `docker-build`，不是 `docker_build`）
+  - 不在 image 内 bake secrets
+  - healthcheck 用 Python stdlib（不装 curl）
+- 状态：DONE_WITH_CONCERNS
+  - 本地 `docker build` 成功（394MB image，92MB content）
+  - 本地 `docker run` + `/healthz` 返回 `{"status":"ok"}` ✓
+  - DB 写入验证：`GET /api/todos` 初始化 `/app/data/db/app.db`（49KB，owner appuser:appuser）
+  - 容器以 appuser (uid 1000) 运行 ✓
+  - Commit `1cb8385` "build: add Dockerfile, docker-compose, and CI docker-build job"
+
+**5 个 deviations（全部 justified）**：
+1. `pip install --no-cache-dir uv` 替代 `COPY --from=ghcr.io/astral-sh/uv`：ghcr.io 在 CN 网络下不可达（60 分钟 timeout），PyPI 可达。uv 通过 PyPI wheel 分发，效果等同。`--no-cache-dir` 保持 image 小
+2. 创建 `appuser` (uid 1000)：spec 假设 `python:3.12-slim` 有 `python` user，实际无（`docker run python:3.12-slim id` 显示 uid=0 root）。`groupadd --system --gid 1000 appuser && useradd --system --uid 1000 --gid appuser ...`
+3. `uv sync --frozen --no-install-project` 替代 `uv sync --no-dev`：`pyproject.toml` 用 `[project.optional-dependencies]`（PEP 621 extras）而非 `[dependency-groups]`，`--no-dev` 不适用。`--no-install-project` 只装 deps 不装 project 本身（app code 后续 COPY）
+4. `CMD [".venv/bin/uvicorn", ...]` 替代 `CMD ["uv", "run", "uvicorn", ...]`：`uv run` 会写 `/app/.cache/uv`（appuser 权限拒）。直接调 venv binary 更简洁，无 re-resolve 开销
+5. Compose healthcheck 用 Python stdlib `urllib.request`：不装 curl
+
+**派发 combined spec + code quality reviewer**：
+- 模型：sonnet
+- 结论：✅ Approved
+- 验证本地 build/run：reviewer 重新跑 `docker run` + `curl /healthz` 返回 `{"status":"ok"}` ✓
+- Spec checklist 全通过：Dockerfile + docker-compose + .dockerignore + 本地 build + 本地 run + CI `docker-build` job（exact name）
+- Code quality strengths：non-root appuser + USER 在 CMD 前 ✓；layer caching ✓；`--frozen` + `--no-install-project` ✓；no secrets baked ✓；.dockerignore 排除 .env-patterns via *.md/.claude/.git + dev data via data/db/*.db ✓；compose healthcheck 用 Python stdlib ✓；CI smoke test 真实（docker run + curl + grep）✓；`PYTHONUNBUFFERED=1` ✓
+- Minor issues（不阻断）：
+  - `ENV HOST=0.0.0.0`/`ENV PORT=8000` 是 dead config — CMD hardcodes `--host 0.0.0.0 --port 8000`。保留作 runtime contract documentation（Fly.io T24 可能用）
+  - `UV_CACHE_DIR=/tmp/uv-cache` unused — CMD 直接调 venv binary，无 uv runtime 调用。保留 defensive（未来容器内可能跑 uv 命令）
+  - `chmod 0777 data/db data/uploads` 单用户容器 acceptable；bind-mount 场景 host-owned files override 容器 perms
+  - CI smoke test 依赖 GitHub Actions runner 自带 curl（self-hosted runner 可能无）
+
+**学到的教训**：
+1. **`python:3.12-slim` 无内置 non-root user**：spec 假设 `python:3.12-slim` 有 `python` user（uid 1000），实际无（root only）。需在 Dockerfile 内 `groupadd` + `useradd` 创建。教训：不要假设 base image 的 user；`docker run <base> id` verify 或在 Dockerfile 内显式创建。
+2. **ghcr.io 在某些 region 不可达**：`COPY --from=ghcr.io/astral-sh/uv` 在 CN 网络下 timeout。PyPI 是 uv 的 canonical source（PyPI wheel 分发 uv binary）。`pip install --no-cache-dir uv` 是 portable fallback。教训：multi-registry reachability — ghcr.io 是 GitHub Container Registry，CN 网络下不可达；PyPI 是 mirror-friendly。选 PyPI 作 fallback。
+3. **`[project.optional-dependencies]` vs `[dependency-groups]` 影响 uv sync flag**：`pyproject.toml` 用 PEP 621 extras（`[project.optional-dependencies]`），`--no-dev` 不适用（uv 0.12 弃用）。`--no-install-project` 是正确 flag（只装 deps，不装 project）。教训：读 pyproject.toml 确认 dependency structure 再选 uv sync flag；`--frozen` + `--no-install-project` 是 production Dockerfile 标准组合。
+4. **`uv run` 在 non-root 容器内会写 cache 失败**：`uv run uvicorn` 尝试写 `/app/.cache/uv`，appuser 无权限。Fix：直接调 `.venv/bin/uvicorn`（venv 已 populate）或设 `UV_CACHE_DIR=/tmp/uv-cache`。前者更简洁，无 re-resolve 开销。教训：non-root 容器内避免 `uv run`，直接调 venv binary。
+5. **compose healthcheck 用 Python stdlib 避免 apt install curl**：`python:3.12-slim` 不含 curl。healthcheck 用 `python -c "import urllib.request; urllib.request.urlopen(...)"` 而非 `curl`。这避免额外 apt 层 + image 体积。教训：healthcheck 选 stdlib 工具，不装额外包。
+6. **CI `docker-build` job 用 BuildKit + GHA cache**：`docker/setup-buildx-action@v3` + `docker/build-push-action@v5` + `cache-from: type=gha` + `cache-to: type=gha,mode=max`。GHA cache 让 CI build 快（后续 build 复用 layer cache）。教训：CI docker build 用 BuildKit + GHA cache 加速。
+7. **CI smoke test 是 docker-build job 的关键**：`docker run -d` + `sleep` + `curl /healthz` + `grep '"status":"ok"'`。这验证 image 不只 build 成功，还 runtime 启动 + healthz 响应。教训：docker-build CI job 不只 build，要 smoke test 验证 runtime。
+8. **bind-mount 让 host 文件 override 容器 perms**：compose `volumes: - ./data:/app/data` 让 host 的 `./data` 目录 mount 到容器 `/app/data`。容器内 `chmod 0777 data/db` 对 bind-mount 无效（host perms 优先）。但 SQLite 写入仍需容器 user 对 host `./data/db` 有写权限。教训：bind-mount 场景下，host 目录权限需匹配容器 user uid（uid 1000）。
+
+**T23 完成 commit 链**：
+- `1cb8385` build: add Dockerfile, docker-compose, and CI docker-build job
+
+---
