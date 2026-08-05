@@ -4,8 +4,9 @@ Generates RFC 5545-compliant VCALENDAR/VTODO byte streams for export to
 calendar applications (Apple Calendar, Google Calendar).
 """
 from datetime import datetime, timezone
+from urllib.parse import quote
 
-__all__ = ["export_ics"]
+__all__ = ["export_ics", "build_todoist_url"]
 
 
 def export_ics(todos: list[dict]) -> bytes:
@@ -59,3 +60,18 @@ def _escape(s: str) -> str:
         .replace(",", "\\,")
         .replace("\n", "\\n")
     )
+
+
+def build_todoist_url(todos: list[dict]) -> str:
+    """Build a Todoist quick-add URL from todo dicts.
+
+    Args:
+        todos: List of dicts with at least ``what`` (str). ``due_at`` and
+            ``who`` are ignored — Todoist quick-add only takes free text.
+
+    Returns:
+        A ``https://todoist.com/import?text=<encoded>`` URL.
+    """
+    parts = [t["what"] for t in todos if t.get("what")]
+    joined = " ".join(parts)
+    return f"https://todoist.com/import?text={quote(joined)}"
