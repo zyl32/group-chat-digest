@@ -117,8 +117,9 @@ def test_status_response_shape_exactly_configured_only(client, monkeypatch):
 def test_store_does_not_log_value(client, monkeypatch, caplog):
     """The plaintext value must never appear in any log record.
 
-    Asserts against the §3.1 invariant "绝不写入日志". Scans all log
-    records at all levels — both router and vault logs.
+    Asserts against the §3.1 invariant "绝不写入日志". Captures the router
+    logger at DEBUG level (the vault backend ``InMemoryVault`` does not
+    log, so router coverage is sufficient for this test's mock setup).
     """
     v = InMemoryVault()
     monkeypatch.setattr("app.routers.credentials.get_vault", lambda: v)
