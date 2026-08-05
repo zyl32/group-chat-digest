@@ -152,7 +152,12 @@
           if (!r.ok) { var t = await r.text(); exportStatus.textContent = '导出失败: ' + r.status + ' ' + t; exportStatus.className = 'status err'; return; }
           var j = await r.json();
           if (j.url) {
-            exportStatus.innerHTML = 'Todoist URL: <a href="' + j.url + '" target="_blank" rel="noopener">打开</a>';
+            exportStatus.replaceChildren(
+              document.createTextNode('Todoist URL: '),
+              Object.assign(document.createElement('a'), {
+                href: j.url, target: '_blank', rel: 'noopener', textContent: '打开'
+              })
+            );
             exportStatus.className = 'status ok';
             window.open(j.url, '_blank', 'noopener');
           } else {
