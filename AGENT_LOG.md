@@ -1742,3 +1742,87 @@
 5. 后续 main push 自动触发 CI deploy
 
 ---
+
+## T25: 冷启动验证（陌生 agent）
+
+**日期**: 2026-08-06
+
+**触发的 Superpowers 技能**: subagent-driven-development（dispatch fresh subagent）/ writing-plans（验证 SPEC/PLAN 可读性）
+
+**关键 prompt / context 配置**:
+- subagent_type: `general-purpose`（新 session、隔离上下文，不导入主 session 的对话历史或 memory）
+- worktree: `worktree-wt-coldstart`（从 main @ `775705c` 切出）
+- 任务: 实现 `GET /api/digests` 列表端点，严格 TDD，遇不确定即暂停
+- 提示词关键约束: "Pause and report if anything is ambiguous. Do NOT guess. Cite exact line numbers."
+- 显式禁止: 不要加分页/过滤/无关 refactor；不要猜；不明确处记录而非假设
+
+**subagent 输出关键片段 / commit hash**:
+- Commit `f6d9ef6` — `feat(digests): add GET /api/digests list endpoint`
+- 文件: `app/routers/digests.py`（40 行）、`app/main.py`（+2 行 include_router）、`tests/integration/test_digest_router.py`（3 测试，77 行）
+- 全量测试 132/132 pass
+- agent 报告: DONE 状态、约 30 分钟（阅读 18 / 写测试 3 / 实现 5 / 提交 1 / 环境 3）
+- 报告列出 6 处 spec 缺陷（A–F），4 处误读纠正，全部从代码反推而非从 spec
+
+**产出文档**: `SPEC_PROCESS.md`（240 行，commit `688e96e`），记录 agent 元数据、暂停点、6 处 spec 缺陷、误读、产出差距、6 条 SPEC/PLAN 修订建议
+
+**人工干预**: 编排器仅做两件事——派发 fresh subagent + 基于 subagent 报告撰写 SPEC_PROCESS.md。subagent 报告无虚假陈述（已交叉验证 commit hash 与 diff）。SPEC_PROCESS.md 中 6 条修订建议以"v1.1 启动时合并"形式记录，不回改 frozen 的 v1 SPEC（保留规约演化轨迹的诚实性）。
+
+**学到的教训**:
+1. **冷启动 agent 不阻塞 ≠ SPEC 清晰**：subagent 未因不明确而暂停，但报告列了 6 处缺陷。原因：现有代码约定足够强，agent "读代码"而非"读 spec"做了所有决策。这恰恰证明 SPEC 不自洽——agent 的"无阻塞"是幸存者偏差，靠代码补了 spec 的洞。教训：冷启动验证的"agent 不暂停"是虚假信号，应看"agent 在多少决策点靠代码而非 spec 解决"。
+2. **冷启动验证只能发现"spec 漏了但代码补了"的缺陷**：若代码写错，agent 会继承错误——冷启动无法发现"代码错但 spec 对"。教训：冷启动验证不是完整规约测试，是单向 sanity check；要发现"代码错"需对照 spec 跑 audit。
+3. **SPEC.md §3.8 前端节列了页面但未定义后端 API 契约**：典型"前端先于后端文档化"陷阱。`/digests` UI 页面在 SPEC 写了"按日期倒序"但后端 `GET /api/digests` 的路径/字段/状态码从未定义。教训：SPEC 的前后端节必须交叉引用；前端每提到一个 URL，后端节必须有对应 API 契约。
+4. **"按日期倒序"二义性暴露 SPEC 字段命名问题**：`Digest.date` 是字符串 YYYY-MM-DD（同日内顺序未定），`Digest.created_at` 是 DateTime（时间序严格）。SPEC 用"日期"模糊指向，agent 选 `created_at`。教训：SPEC 排序要求必须指明字段名，避免用"日期/时间"自然语言指代。
+5. **PLAN 缺一个 task 是常态而非异常**：T25 暴露 PLAN 无 `GET /api/digests` 任务，但前端 `digests.html:22` 自己也承认这是 v1 缺口。PLAN 写于 SPEC 之后，SPEC 漏了 → PLAN 也漏了。教训：PLAN 的 task 列表不能比 SPEC 多覆盖；SPEC 是天花板，PLAN 是天花板下的拆解。
+6. **冷启动提示词模板（§T25）应强制列出"必须暂停"的决策类型**：原模板说"遇不清楚立即暂停"——subagent 的"不清楚"阈值比主开发 agent 高（更倾向"读代码解决"）。下次应在提示词显式列："以下决策必须暂停询问，不得从代码推断：响应字段集合 / 排序字段 / 空列表状态码 / 路由文件位置"。教训：提示词要"列举式"约束，不要"原则式"约束。
+
+**T25 完成 commit 链**:
+- `f6d9ef6` feat(digests): add GET /api/digests list endpoint（subagent 直接 commit）
+- `688e96e` docs: add SPEC_PROCESS.md with cold-start agent validation findings（编排器写）
+- `1001f72` merge: wt-coldstart — T25 (cold-start verification + GET /api/digests gap fix)
+
+---
+
+## T26: AGENT_LOG.md（持续更新 — 本条即 T26）
+
+**日期**: 2026-08-06
+
+**触发的 Superpowers 技能**: subagent-driven-development（每 task 派发 subagent 后追加日志）/ writing-plans（日志作为 PLAN T26 的产物）
+
+**关键 prompt / context 配置**: T26 不是单次 task，是贯穿 T1–T27 的元过程。每个 subagent 派发完成后，编排器在主 session 直接追加 AGENT_LOG.md 一条，包含 6 字段（触发的技能 / prompt 配置 / subagent 输出 / 人工干预 / 学到的教训 / commit 链）。
+
+**subagent 输出关键片段 / commit hash**: 见 T1–T25 各条。本条目是 AGENT_LOG 自身的元记录。
+
+**人工干预**: 无。AGENT_LOG 完全由编排器撰写，subagent 不写日志（避免 subagent 自夸式记录）。每条日志在 subagent 完成 + 编排器审核后才追加——日志记录的是"编排器视角下的 subagent 行为"而非"subagent 视角下的自己"。
+
+**学到的教训**:
+1. **AGENT_LOG 必须由编排器写而非 subagent 自报告**：subagent 容易高估自己的产出（"已完成 X"实际只做了一半）或省略偏离（不写"我加了无关 refact"）。编排器交叉验证 commit diff 后再写日志，能捕捉 subagent 报告与实际产出不符的情况（如 T18 subagent 漏报 format:str → Literal 重构）。
+2. **日志字段 6 个够用**：触发的技能 / prompt / 输出 / 干预 / 教训 / commit 链。少一则失上下文，多则冗余。早期 T1–T17 用 `[date] Task T<N>:` 格式，T18+ 简化为 `T<N>:`——后者更紧凑，T26 起统一。
+3. **"学到的教训"是日志最有价值的字段**：commit diff 看代码就知道，但"为什么这么做"和"下次怎么改"只有教训字段记录。复盘时优先读教训字段。
+4. **日志不是 PR 描述**：早期几条偏冗长（如 T18 详述 Pydantic v2 ConfigDict 用法）。教训字段应一条短句 + 一个具体例子，不要展开成博客。
+
+**T26 commit**: 本条随 T27 一同提交（`docs: add REFLECTION.md and finalize README`）。
+
+---
+
+## T27: REFLECTION.md + README 收尾
+
+**日期**: 2026-08-06
+
+**触发的 Superpowers 技能**: writing-plans（REFLECTION 回应 §五-反思 9 问题）/ superpowers:finishing-a-development-branch（整体收尾）
+
+**关键 prompt / context 配置**: 无 subagent 派发。编排器主 session 直接撰写 REFLECTION.md（1500–2500 字，9 问题）+ README 增补"安全边界说明"与"线上 URL"两节。REFLECTION 标注"AI 辅助润色"（§学术规范）。
+
+**subagent 输出关键片段 / commit hash**:
+- 创建 `REFLECTION.md`（9 问题回答 + 学术规范声明）
+- 修改 `README.md` 增补"安全边界说明"与"线上 URL"两节
+
+**人工干预**: REFLECTION 是编排器主 session 直接产出，不派 subagent——反思必须基于全部 session 上下文（subagent 上下文隔离无法反思全局）。README 收尾同理。
+
+**学到的教训**:
+1. **反思类文档必须主 session 写**：派 subagent 写 REFLECTION 会得到"通用方法论感想"，而非"本项目的具体教训"。教训：高上下文依赖的产出（REFLECTION / AGENT_LOG）禁止派 subagent，低上下文机械任务（实现单端点）才派。
+2. **README 的"安全边界说明"必须独立成节**：原来散在 Fly.io 部署注释里。审计要求 §3.1 凭据威胁模型与对策必须独立成节，可被快速定位。教训：安全相关文档不能埋在其他节注释里。
+
+**T27 commit**: `docs: add REFLECTION.md and finalize README`（本条与 T26 一同 commit）。
+
+---
+

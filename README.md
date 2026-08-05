@@ -104,6 +104,29 @@ T13/T19 的凭据存储使用 `OSKeyringVault`（操作系统 keyring）。Fly.i
 **演示用**：使用 `LLM_PROVIDER=mock`（无需 API key）。
 **生产用**：通过 `fly secrets set DEEPSEEK_API_KEY=...` 注入环境变量，并扩展 LLM 适配器工厂使其优先从 env 读取。完整的 Fly.io 凭据管理为 v1.1 stretch goal，本期不实现。
 
+## 安全边界说明
+
+本项目凭据管理遵循 §3.1 硬约束：
+
+- **绝不硬编码**：API key 不进源码、不进 git（含历史）、不进日志、不进终端 history、不进明文配置文件
+- **存储介质**：`OSKeyringVault`（macOS Keychain / Windows Credential Manager / Linux SecretService）作为默认 vault；`InMemoryVault` 仅用于测试
+- **传输路径**：`.env` 文件加载（不通过命令行 `export`）；首次运行通过 `/setup` 页面隐藏输入引导录入
+- **状态可见性**：`GET /api/credentials/llm_api_key/status` 只返 `{"configured": bool}`，**不回显明文**
+- **生命周期**：store / status / clear 三个端点，clear 用于轮换
+- **威胁模型与对策**：详见 `SPEC.md` §3.1
+
+**已知边界**（v1）：
+
+- Fly.io Linux 机器无桌面 keyring 后端，`OSKeyringVault` 不可用 → 生产 LLM key 需用 `fly secrets set` 注入环境变量（v1.1 stretch：env-var vault backend）
+- WebUI 无身份认证（单用户演示场景）；多用户部署需自行加反向代理鉴权
+
+## 线上 URL
+
+- **目标 URL**：<https://group-chat-digest.fly.dev>
+- **当前状态**：**未实际部署**——CI deploy job 已配置（`fly deploy --remote-only`，gated on `main` push + `FLY_API_TOKEN` secret），但首次部署需仓库所有者本地执行 `fly deploy` 一次以创建应用。本仓库无 Fly.io 账号，故 URL 尚未激活。
+- **本地访问**：`uv run uvicorn app.main:app --reload --port 8000` → <http://localhost:8000>
+- **Docker 本地**：`docker compose up` → <http://localhost:8000>
+
 ## CI
 
 GitHub Actions 工作流 `.github/workflows/ci.yml`：
@@ -122,6 +145,8 @@ GitHub Actions 工作流 `.github/workflows/ci.yml`：
 - [x] PLAN.md
 - [x] 实现完成
 - [x] AGENT_LOG.md
+- [x] SPEC_PROCESS.md（冷启动验证）
+- [x] REFLECTION.md
 - [x] CI 配置（unit-test + docker-build + deploy）
 - [x] 线上部署配置（`fly.toml`）
 - [ ] 实际部署上线（需用户执行 `fly deploy`）
