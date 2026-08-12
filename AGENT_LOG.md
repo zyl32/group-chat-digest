@@ -1826,3 +1826,36 @@
 
 ---
 
+## 补丁 P1: 切换首选部署目标为 Render（避开 flyctl 安装）
+
+**日期**: 2026-08-13
+
+**触发的 Superpowers 技能**: 无（这是交付后的紧急 UX 修复，不走完整 subagent 流程；编排器主 session 直接改）
+
+**背景**: 用户报告 flyctl 安装受阻，希望换一种方式激活线上 URL。Render 与 Fly.io 同为 Docker 部署 + 持久卷 + 免费 tier，但 Render 不需要装 CLI，所有操作在浏览器 dashboard 完成——门槛显著低于 Fly.io。
+
+**改动**:
+- 新增 `render.yaml`（Blueprint IaC）：`runtime: docker` / `plan: free` / `region: singapore` / `healthCheckPath: /healthz` / `disk: 1GB /app/data` / `LLM_PROVIDER=mock`
+- 修改 `README.md`：
+  - 简介改"生产部署使用 Docker + Render（备选 Fly.io）"
+  - 项目结构加 `render.yaml # Render 部署（Blueprint IaC）`，`fly.toml` 标"备选"
+  - 新增"Render 部署（首选）"章节，含首次部署步骤、自动部署机制、可选 LLM 切换、已知限制、配置要点、服务名冲突说明
+  - 原"Fly.io 部署"章节降级为"备选：Fly.io 部署"
+  - "线上 URL"章节：首选 `group-chat-digest.onrender.com`，备选 `group-chat-digest.fly.dev`
+  - "CI"章节加注：Render 自动从 GitHub webhook 部署，无需 CI deploy job；Fly deploy job 保留为备选（未配 token 时 graceful skip）
+  - "安全边界说明"加 Render Linux 容器同样无桌面 keyring 后端
+  - "状态"清单：`[x] 线上部署配置（render.yaml 首选 + fly.toml 备选）`，`[ ] 实际部署上线（需用户在 Render dashboard 完成 Blueprint 连接）`
+
+**人工干预**: 无 subagent 派发。编排器直接写——这是 4 文件小改（1 新建 + 1 改 + 1 日志追加），低于 subagent 派发成本。
+
+**学到的教训**:
+1. **部署门槛要早考虑**：T24 选 Fly.io 时未充分评估"用户是否愿意装 flyctl"。Render 的"零 CLI、浏览器操作"对非工程用户友好得多。教训：部署平台选型应考虑目标用户门槛，不只看技术指标。
+2. **Blueprint IaC 比 fly.toml 更强**：`render.yaml` 是 Render 的 Infrastructure-as-Code，push 到 main 后 Render 自动识别并应用——比 `fly.toml` 需要本地 `fly deploy` 推送更自动化。教训：优先选支持 IaC + auto-apply 的部署平台。
+3. **Render 部署不依赖 CI job**：Render 自己监听 GitHub webhook，main push 自动部署。Fly.io 需要 CI `fly deploy --remote-only` job + `FLY_API_TOKEN` secret。教训：选平台时考虑"是否需要 CI 配置"——越少越好。
+4. **多平台部署配置并存是合理的**：保留 `fly.toml` 作为备选不删除——若 Render 出问题，用户可快速切 Fly。教训：部署配置不互斥，保留多平台配置提升容错。
+
+**P1 commit**: `docs(deploy): switch primary deploy target to Render (render.yaml + README)`（本条与改动一同 commit）。
+
+---
+
+
