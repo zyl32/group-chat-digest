@@ -1858,4 +1858,37 @@
 
 ---
 
+## 补丁 P2: 切换首选部署目标为 Hugging Face Spaces（避开绑卡门槛）
+
+**日期**: 2026-08-13
+
+**触发的 Superpowers 技能**: 无（紧急 UX 修复，编排器主 session 直接改）
+
+**背景**: P1 切到 Render 后用户报告 "free tier 也需要绑信用卡"。Render 政策变更后即使免费额度内也要求绑卡（不会扣费但需信用卡信息）。换 Hugging Face Spaces——真免费、不绑卡、支持 Docker、URL 固定、CPU basic free tier（2 vCPU + 16GB RAM，比 Render free 多）。
+
+**改动**:
+- 修改 `Dockerfile`：CMD 从 exec form 改 shell form `["sh", "-c", ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]`，支持 `PORT` env var 覆盖。本地 docker-compose 仍用 8000（未设 PORT，fallback），HF Spaces 可在 Settings 设 `PORT=7860` 或让 HF 自动监听 EXPOSE 8000。
+- 修改 `README.md`：
+  - 简介改"生产部署使用 Docker + Hugging Face Spaces（备选 Render / Fly.io，均不绑卡）"
+  - 项目结构：`render.yaml` 标"备选：Render 部署（Blueprint IaC，需绑卡）"，`fly.toml` 标"备选：Fly.io 部署（需绑卡）"
+  - 新增"Hugging Face Spaces 部署（首选）"章节（5 步首次部署 + 后续部署 + LLM 切换 + 已知限制 + 配置要点）
+  - 原"Render 部署"降级为"备选 1：Render 部署"
+  - "线上 URL"章节：首选 HF Spaces URL，备选 Render/Fly
+  - "CI"加注：HF Spaces / Render 都不依赖 CI，deploy job 仅服务 Fly.io 备选
+  - "安全边界说明"加 HF Spaces 同样无 keyring
+  - "状态"清单：`[x] 线上部署配置（Dockerfile 适配 HF Spaces，render.yaml + fly.toml 备选）`，`[ ] 实际部署上线（需用户在 HF Spaces 创建 Space + git push hf main）`
+
+**人工干预**: 无 subagent 派发。3 文件小改（1 Dockerfile CMD 一行 + 1 README 大段重写 + 1 日志追加），低于 subagent 派发成本。
+
+**学到的教训**:
+1. **"免费"的定义差异**：Render "free tier" 需绑卡（不扣费但要卡信息），HF Spaces "free tier" 完全不需卡。教训：选平台时区分"免费使用"与"免费但需绑卡"——后者对无信用卡用户（学生/海外/隐私敏感）门槛更高。
+2. **Docker CMD shell form vs exec form 权衡**：exec form（JSON 数组）不支持环境变量展开，shell form 用 `sh -c` 支持。生产容器最好用 shell form 当端口/参数需运行时配置。教训：Dockerfile CMD 默认应用 shell form 以支持 `$PORT` 覆盖，多平台部署免改 Dockerfile。
+3. **HF Spaces 部署模型：Space 是独立 git repo**：HF Space 不是从 GitHub repo 拉代码自动部署，而是独立 git repo 需 `git push hf main`。这与 Render（监听 GitHub webhook 自动部署）不同——HF 多一步手动 push。教训：HF Spaces 部署要文档化 `git remote add hf + git push hf main`，不能假设用户知道。
+4. **HF Spaces 默认监听 EXPOSE 端口**：HF 文档说默认 7860，但实际会监听 Dockerfile EXPOSE 的端口。Dockerfile EXPOSE 8000 + CMD shell form `${PORT:-8000}` 双保险——HF 不设 PORT 用 8000，HF 设 PORT=7860 用 7860。教训：用 shell form + env var fallback 兼容多平台端口约定。
+5. **P1 与 P2 的差别**：P1 切 Render 是 UX 优化（flyctl CLI 门槛），P2 切 HF Spaces 是硬约束（绑卡门槛）。教训：区分"软门槛"（CLI 安装麻烦但能解决）与"硬门槛"（绑卡无解），硬门槛必须换平台。
+
+**P2 commit**: `docs(deploy): switch primary deploy to Hugging Face Spaces (no card required)`（本条与改动一同 commit）。
+
+---
+
 

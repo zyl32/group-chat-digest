@@ -45,4 +45,6 @@ USER appuser
 
 # Call the venv's uvicorn directly to avoid `uv run` re-resolving on every
 # start (the venv is already populated by `uv sync` above).
-CMD [".venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use shell form so $PORT can be overridden by the runtime environment
+# (e.g. Hugging Face Spaces may set PORT=7860; local docker defaults to 8000).
+CMD ["sh", "-c", ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

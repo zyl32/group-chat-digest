@@ -2,7 +2,7 @@
 
 > AI4SE 期末项目（B 类·应用类项目）
 
-一个把班级群聊从消息洪流里抽出每日摘要与可执行待办的小工具。后端基于 FastAPI，LLM 层支持 Mock / DeepSeek / OpenAI 兼容协议，前端为单页 HTML。生产部署使用 Docker + Render（备选 Fly.io）。
+一个把班级群聊从消息洪流里抽出每日摘要与可执行待办的小工具。后端基于 FastAPI，LLM 层支持 Mock / DeepSeek / OpenAI 兼容协议，前端为单页 HTML。生产部署使用 Docker + Hugging Face Spaces（备选 Render / Fly.io，均不绑卡）。
 
 ## 功能
 
@@ -26,8 +26,8 @@ run/                # 运行配置
 tests/              # 单测 + e2e
 Dockerfile          # 生产镜像
 docker-compose.yml  # 本地全栈
-render.yaml         # Render 部署（Blueprint IaC）
-fly.toml            # 备选：Fly.io 部署
+render.yaml         # 备选：Render 部署（Blueprint IaC，需绑卡）
+fly.toml            # 备选：Fly.io 部署（需绑卡）
 ```
 
 ## 本地开发
@@ -60,58 +60,98 @@ docker compose up
 
 健康检查：`curl http://localhost:8000/healthz` → `{"status":"ok"}`。
 
-## Render 部署（首选）
+## Hugging Face Spaces 部署（首选）
 
-Render 是本项目的默认生产部署目标。配置已写入 `render.yaml`（Blueprint IaC），无需安装任何 CLI——所有操作在浏览器 dashboard 完成。
+Hugging Face Spaces 是本项目的默认生产部署目标——**真免费、不绑卡、支持 Docker、URL 固定**。
 
-**生产 URL**：**<https://group-chat-digest.onrender.com>**
+**生产 URL**：`https://<你的HF用户名>-group-chat-digest.hf.space`
 
-### 首次部署（一次性，浏览器操作）
+### 首次部署（一次性，浏览器操作 + 一次 git push）
 
-1. <https://render.com> → Sign up → 用 GitHub 账号登录
-2. New → **Blueprint** → 选择已连接的 GitHub 仓库 `zyl32/group-chat-digest`
-3. Render 自动识别 `render.yaml` → 显示配置预览 → Apply
-4. 等待 build 完成（5–10 min，首次会拉基础镜像较慢）→ 拿到 URL `https://group-chat-digest.onrender.com`
-5. 验证：`curl https://group-chat-digest.onrender.com/healthz` → `{"status":"ok"}`
+**步骤 1：注册 HF 账号**
+
+1. 打开 <https://huggingface.co/join> → 用 GitHub 账号登录 → Authorize
+2. 填用户名 + 邮箱 + 密码 → 完成注册
+
+**步骤 2：创建 Space**
+
+1. 右上角头像 → **New Space**
+2. 填写：
+   - **Name**: `group-chat-digest`
+   - **License**: MIT
+   - **SDK**: 选 **Docker**
+   - **Space hardware**: **CPU basic (Free)**
+   - **Visibility**: Public（Private 要付费）
+3. **Create Space** → 跳到空 Space 页面
+
+**步骤 3：生成 HF access token**
+
+1. 头像 → **Settings** → 左侧 **Access Tokens**
+2. **New token** → Name: `deploy` → Role: **Write** → Create token
+3. 复制 token（`hf_xxxxxxxxxx`）——只显示一次，丢了要重新生成
+
+**步骤 4：把项目代码 push 到 Space**
+
+```bash
+# 在你电脑上
+cd "D:/大二下/summer/homework"
+
+# 添加 HF 为远程仓库
+git remote add hf https://huggingface.co/spaces/<你的HF用户名>/group-chat-digest
+
+# push（提示输入用户名/密码）
+git push hf main
+# Username: <你的HF用户名>
+# Password: <粘贴刚生成的 token，不是 HF 账号密码>
+```
+
+push 后 Space 页面立刻进入 "Building" 状态。
+
+**步骤 5：等 build 完成 + 验证**
+
+3–5 分钟后 Space 状态变 "Running"，URL `https://<你的HF用户名>-group-chat-digest.hf.space` 出现在页面顶部。
+
+验证：
+```bash
+curl https://<你的HF用户名>-group-chat-digest.hf.space/healthz
+# 期望: {"status":"ok"}
+```
 
 ### 后续部署
 
-`main` 分支一 push，Render 通过 GitHub webhook 自动触发部署。**不需要 CI deploy job**——这与 Fly.io 不同（Fly 需要 `fly deploy --remote-only` CI job）。
+`main` 分支一 push 到 HF Space 仓库（`git push hf main`），Space 自动重新 build + 部署。**不需要 CI job**——HF 自己监听 push。
 
 ### （可选）切换为真实 LLM
 
-Render dashboard → Environment → Add Environment Variable：
+Space 页面 → **Settings** → **Variables and secrets**：
 
-- `LLM_PROVIDER` = `deepseek`
-- `DEEPSEEK_API_KEY` = `sk-xxxxxxxx`（勾选 "Secret" 不在界面回显）
+| Name | Value | Type |
+|---|---|---|
+| `LLM_PROVIDER` | `deepseek` | Variable |
+| `DEEPSEEK_API_KEY` | `sk-xxxxxxxx` | **Secret**（不回显） |
 
-保存后 Render 自动重启服务，无需重新部署。
+Save → Space 自动 restart（不重新 build）。
 
-### 已知限制：凭据保险库
+### 已知限制
 
-T13/T19 的凭据存储使用 `OSKeyringVault`（操作系统 keyring）。Render Linux 容器无桌面 keyring 后端，因此：
-
-- `/api/credentials/llm_api_key/status` 在 Render 上返回 `{"configured": false}`
-- `/api/credentials/llm_api_key` POST 会失败（KeyringError）
-
-**演示用**：使用 `LLM_PROVIDER=mock`（无需 API key）。
-**生产用**：通过 Render 环境变量注入 `DEEPSEEK_API_KEY`，并扩展 LLM 适配器工厂使其优先从 env 读取（v1.1 stretch goal）。
+- **Ephemeral filesystem**：免费 CPU basic tier 无持久存储——SQLite DB + 上传文件在 Space restart/sleep 后重置。演示场景可接受；持久化需付费 persistent storage（$5/月 20GB）。
+- **闲置 sleep**：48h 无访问 Space 自动 sleep，下次访问自动唤醒（约 30s 冷启动）。
+- **凭据保险库不可用**：HF Spaces Linux 容器无桌面 keyring 后端，`OSKeyringVault` 不可用——`/api/credentials/llm_api_key/status` 返回 `{"configured": false}`，POST 失败。**用 Space Variables/Secrets 注入 LLM key 替代**（v1.1 stretch：env-var vault backend）。
 
 ### 配置要点
 
-- `runtime: docker` 复用本仓库 `Dockerfile`，无单独构建脚本
-- `plan: free` 单用户演示足够（512MB RAM / 0.1 CPU）
-- `region: singapore` 对中国大陆延迟友好（备选 `frankfurt` / `oregon`）
-- `healthCheckPath: /healthz` Render 用它判断服务健康状态
-- **无持久 disk**（free tier 不支持）——SQLite DB + 上传文件在每次 deploy 后重置。演示场景可接受；持久化需升级 starter plan（$7/月）并在 `render.yaml` 启用 `disk:` 块
-- `autoDeploy: true` main push 自动重新部署
+- `SDK: Docker` 复用本仓库 `Dockerfile`，无单独构建脚本
+- `Space hardware: CPU basic (Free)`：2 vCPU, 16GB RAM（比 Render free 多）
+- `Dockerfile CMD` 用 shell form 读 `$PORT` env var——HF Spaces 默认 7860，本地 8000，任平台均可
+- `Visibility: Public` 免费；Private 需 Pro 账号
 - `LLM_PROVIDER=mock` 默认值，首次部署即可演示
+- HF Spaces 自带 GitHub Actions-style 自动部署（push 触发），无需 `.github/workflows` 改动
 
-> **服务名冲突**：若 `group-chat-digest` 在 Render 上已被占用，请修改 `render.yaml` 的 `name` 字段为唯一名称（如 `group-chat-digest-<your-handle>`），并相应更新本文档中的 URL。
+---
 
-## 备选：Fly.io 部署
+## 备选 1：Render 部署
 
-Fly.io 是备选部署目标，配置已写入 `fly.toml`。需要安装 `flyctl` CLI。
+Render 是备选部署目标（free tier 需绑卡但不会扣费），配置已写入 `render.yaml`。需要绑信用卡，门槛高于 HF Spaces。
 
 ### 首次部署（一次性，需人工执行）
 
@@ -167,14 +207,14 @@ T13/T19 的凭据存储使用 `OSKeyringVault`（操作系统 keyring）。Fly.i
 
 **已知边界**（v1）：
 
-- Fly.io / Render Linux 容器均无桌面 keyring 后端，`OSKeyringVault` 不可用 → 生产 LLM key 需用平台环境变量注入（Render dashboard Environment / `fly secrets set`，v1.1 stretch：env-var vault backend）
+- Hugging Face Spaces / Render / Fly.io Linux 容器均无桌面 keyring 后端，`OSKeyringVault` 不可用 → 生产 LLM key 需用平台环境变量注入（HF Spaces Variables and secrets / Render Environment / `fly secrets set`，v1.1 stretch：env-var vault backend）
 - WebUI 无身份认证（单用户演示场景）；多用户部署需自行加反向代理鉴权
 
 ## 线上 URL
 
-- **目标 URL**：<https://group-chat-digest.onrender.com>（Render，首选）
-- **备选 URL**：<https://group-chat-digest.fly.dev>（Fly.io，可选）
-- **当前状态**：**未实际部署**——`render.yaml` Blueprint 配置已就绪，待仓库所有者在 Render dashboard 完成首次连接（浏览器操作，无需 CLI）。Render 连上 GitHub repo 后，后续 `main` push 自动部署。
+- **目标 URL**：`https://<你的HF用户名>-group-chat-digest.hf.space`（Hugging Face Spaces，首选）
+- **备选 URL**：`https://group-chat-digest.onrender.com`（Render，需绑卡）/ `https://group-chat-digest.fly.dev`（Fly.io，需绑卡 + 装 flyctl）
+- **当前状态**：**未实际部署**——`Dockerfile` 已适配 HF Spaces（CMD shell form 读 `$PORT`），待仓库所有者在 HF 创建 Space 并 push 代码。HF 接到 push 后自动 build。
 - **本地访问**：`uv run uvicorn app.main:app --reload --port 8000` → <http://localhost:8000>
 - **Docker 本地**：`docker compose up` → <http://localhost:8000>
 
@@ -188,7 +228,7 @@ GitHub Actions 工作流 `.github/workflows/ci.yml`：
 | `docker-build` | push/PR to main | 构建 Docker 镜像 + 容器冒烟测试 `/healthz` |
 | `deploy` (备选) | push to main（仅） | `fly deploy --remote-only`，依赖 `FLY_API_TOKEN` Secret；未配置时 graceful skip |
 
-> **Render 部署不依赖 CI**：Render 通过自己的 GitHub webhook 监听 `main` push 并自动部署，无需 CI job。`deploy` job 仅服务于备选 Fly.io 路径，未配 `FLY_API_TOKEN` 时会失败但不影响 `unit-test` / `docker-build`。
+> **HF Spaces / Render 部署不依赖 CI**：HF Spaces 监听 Space git repo push 自动部署，Render 监听 GitHub webhook 自动部署。两者均无需 CI deploy job。`deploy` job 仅服务于备选 Fly.io 路径，未配 `FLY_API_TOKEN` 时会失败但不影响 `unit-test` / `docker-build`。
 
 `deploy` job 需要仓库 Settings → Secrets → Actions 中配置 `FLY_API_TOKEN`（在本地执行 `fly tokens create deploy -a group-chat-digest` 生成）。
 
@@ -201,8 +241,8 @@ GitHub Actions 工作流 `.github/workflows/ci.yml`：
 - [x] SPEC_PROCESS.md（冷启动验证）
 - [x] REFLECTION.md
 - [x] CI 配置（unit-test + docker-build + 备选 deploy）
-- [x] 线上部署配置（`render.yaml` 首选 + `fly.toml` 备选）
-- [ ] 实际部署上线（需用户在 Render dashboard 完成 Blueprint 连接）
+- [x] 线上部署配置（`Dockerfile` 适配 HF Spaces，`render.yaml` + `fly.toml` 备选）
+- [ ] 实际部署上线（需用户在 HF Spaces 创建 Space + `git push hf main`）
 
 ## 工作流
 
