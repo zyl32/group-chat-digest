@@ -1,3 +1,14 @@
+---
+title: Group Chat Digest
+emoji: 💬
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+app_file: Dockerfile
+pinned: false
+license: mit
+---
+
 # 群聊摘要与待办提取器（Group Chat Digest）
 
 > AI4SE 期末项目（B 类·应用类项目）
