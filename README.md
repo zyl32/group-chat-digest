@@ -103,7 +103,7 @@ T13/T19 的凭据存储使用 `OSKeyringVault`（操作系统 keyring）。Rende
 - `plan: free` 单用户演示足够（512MB RAM / 0.1 CPU）
 - `region: singapore` 对中国大陆延迟友好（备选 `frankfurt` / `oregon`）
 - `healthCheckPath: /healthz` Render 用它判断服务健康状态
-- `disk: 1GB /app/data` 挂载持久卷——SQLite 数据库 + 上传文件跨部署持久化
+- **无持久 disk**（free tier 不支持）——SQLite DB + 上传文件在每次 deploy 后重置。演示场景可接受；持久化需升级 starter plan（$7/月）并在 `render.yaml` 启用 `disk:` 块
 - `autoDeploy: true` main push 自动重新部署
 - `LLM_PROVIDER=mock` 默认值，首次部署即可演示
 

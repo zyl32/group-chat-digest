@@ -9,8 +9,10 @@
 #
 # Free tier caveats:
 #   - 15 min idle → sleep, cold start 30–60s on first request
-#   - 1GB persistent disk (mounted at /app/data) for SQLite + uploads
 #   - 512MB RAM, 0.1 CPU
+#   - NO persistent disk on free tier — SQLite DB + uploaded files reset on each
+#     deploy. Acceptable for demo; for persistence upgrade to starter plan
+#     ($7/mo) and re-add the `disk:` block below.
 
 services:
   - type: web
@@ -28,7 +30,9 @@ services:
         value: 0.0.0.0
       - key: PORT
         value: "8000"
-    disk:
-      name: data
-      mountPath: /app/data
-      sizeGB: 1
+    # To persist SQLite + uploads across deploys, upgrade to starter plan and
+    # uncomment the disk block:
+    # disk:
+    #   name: data
+    #   mountPath: /app/data
+    #   sizeGB: 1
