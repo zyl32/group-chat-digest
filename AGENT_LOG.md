@@ -1934,3 +1934,33 @@
 ---
 
 
+
+## 补丁 P4：从"已部署 Cloudflare Tunnel"切回"GitHub Release 提交"
+
+**时间**: 2026-08-14
+**触发**: 用户判定 Cloudflare Tunnel URL 不稳定（quick tunnel 随 cloudflared 重启变更 + 依赖本机+代理常开），不适合作为评审可长期访问入口；HF Spaces free tier CPU 配额超限；Render/Fly.io 均需绑卡。改用 GitHub Release 提交，源码包永久托管在 GitHub。
+
+**变更**:
+- 创建 annotated tag `v1.0.0`（含功能完成度/部署状态/启动方式说明）并 push 到 `origin`（GitHub）
+- `submission.jsonc`:
+  - `name`: 张三 → 朱雨乐
+  - `repo_url`: 占位 → `https://github.com/zyl32/group-chat-digest`
+  - `is_deployed`: false（保持）
+  - `deploy_release_url`: 占位 → `https://github.com/zyl32/group-chat-digest/releases/tag/v1.0.0`
+  - `id`: 仍留 `23xxxxxxx` 占位（待用户补学号）
+- `README.md`:
+  - "线上 URL（已上线）"小节 → 改为"提交方式：GitHub Release"，新增"为什么不是已部署上线" + "评审自验路径"（clone/拉源码/Docker/跑测试三种方式）
+  - 状态清单: `[x] 实际部署上线` → `[ ] 实际部署上线`（注明改用 Release 提交的原因 + 评审自验入口）
+
+**学到的教训**:
+1. **"已部署"门槛要审慎判定**：quick tunnel URL 寿命不可控（cloudflared 进程重启即变）+ 依赖本机/代理常开，作为"评审可长期访问入口"不可靠。部署状态从 `is_deployed: true` 切回 `false` 是正确的工程权衡——宁可标记未部署并用 Release 永久托管，也不提交一个会失效的 URL。
+2. **GitHub Release tag URL 在仅 push tag 时就可用**：即使不在 GitHub UI 创建正式 Release 对象，`/releases/tag/<tag>` 路径会自动渲染 tag + 关联 commit + 源码 tarball，满足"release 链接"要求。无需 gh CLI 或 UI 操作即可完成提交。
+3. **submission.jsonc 路径在仓库外**：`submission.jsonc` 位于 `D:/大二下/summer/homework/`（仓库父目录），不在 git 跟踪范围——这是课程提交格式要求（学生单独上传），不应进 git。修改时用绝对路径直接 Write，不通过 worktree。
+4. **HF token 暴露在对话中**：用户曾在对话中直接粘贴 HF access token (`hf_...`) 用于 push。token 已暴露，必须撤销——再次提醒用户去 <https://huggingface.co/settings/tokens> 删除/轮换该 token。
+
+**P4 commit 链**:
+- `docs(submission): switch from live deploy to GitHub Release v1.0.0`（README + AGENT_LOG 本次追加）
+
+**提交入口**: <https://github.com/zyl32/group-chat-digest/releases/tag/v1.0.0>
+
+---
