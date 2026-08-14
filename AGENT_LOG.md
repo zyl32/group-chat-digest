@@ -2049,3 +2049,25 @@
 - `fix(frontend): wire upload→process, render digests list/detail, gate todo actions by state`
 
 ---
+
+## 补丁 P8：发布 v1.0.2 tag（含 P7 前端摘要流程修复）
+
+**时间**: 2026-08-14
+**触发**: P7 修复 commit `286722c` 推送后，submission.jsonc 仍指向 v1.0.1（仅含 P5，不含 P7）。评审若按 tag 拉源码会拿到摘要流程未通的版本（digests.html 占位、上传不自动 process、待办按钮无视 state）。
+
+**变更**:
+- 创建 annotated tag `v1.0.2` 指向 `286722c`，tag message 注明相对 v1.0.1 的 P7 差异 + 后端契约不变声明 + 启动方式
+- push `v1.0.2` 到 origin
+- `submission.jsonc`：`deploy_release_url` 从 v1.0.1 改为 v1.0.2（其他字段不变）
+
+**学到的教训**:
+1. **patch 链路要主动维护 submission 指向**：每次发完修复 commit 后，submission 指向的 tag 必须覆盖该修复——否则评审按 tag 拉源码会复现已修复的 bug。本次是第三次重复这个模式（v1.0.0→v1.0.1→v1.0.2），教训：以后每次修复完应立即发 patch tag + 更新 submission，不留尾巴。
+2. **patch tag 不破坏历史 tag 的契约**：v1.0.0/v1.0.1/v1.0.2 都保留指向各自 commit——任何外部引用都能稳定回放历史快照。这是 SemVer patch 的核心价值。
+3. **tag message 「相对上一版的差异」结构应稳定**：v1.0.1 和 v1.0.2 的 tag message 都遵循「相对 vX.Y.Z-1 的修复 → 后端契约声明 → 启动方式」三段式。教训：patch tag message 结构稳定便于评审快速 diff。
+
+**P8 commit 链**:
+- 仅 tag + submission.jsonc 本地修改（不入 git，tag 是 ref）
+
+**提交入口（最新）**: <https://github.com/zyl32/group-chat-digest/releases/tag/v1.0.2>
+
+---
