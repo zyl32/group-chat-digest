@@ -221,13 +221,38 @@ T13/T19 的凭据存储使用 `OSKeyringVault`（操作系统 keyring）。Fly.i
 - Hugging Face Spaces / Render / Fly.io Linux 容器均无桌面 keyring 后端，`OSKeyringVault` 不可用 → 生产 LLM key 需用平台环境变量注入（HF Spaces Variables and secrets / Render Environment / `fly secrets set`，v1.1 stretch：env-var vault backend）
 - WebUI 无身份认证（单用户演示场景）；多用户部署需自行加反向代理鉴权
 
-## 线上 URL
+## 线上 URL（已上线）
 
-- **目标 URL**：`https://<你的HF用户名>-group-chat-digest.hf.space`（Hugging Face Spaces，首选）
-- **备选 URL**：`https://group-chat-digest.onrender.com`（Render，需绑卡）/ `https://group-chat-digest.fly.dev`（Fly.io，需绑卡 + 装 flyctl）
-- **当前状态**：**未实际部署**——`Dockerfile` 已适配 HF Spaces（CMD shell form 读 `$PORT`），待仓库所有者在 HF 创建 Space 并 push 代码。HF 接到 push 后自动 build。
-- **本地访问**：`uv run uvicorn app.main:app --reload --port 8000` → <http://localhost:8000>
-- **Docker 本地**：`docker compose up` → <http://localhost:8000>
+**实际部署 URL**：**<https://slide-faces-kissing-cheap.trycloudflare.com>**
+
+部署方式：本机 uvicorn + Cloudflare Tunnel（quick tunnel，走代理）。
+
+- **本地服务**：`uv run uvicorn app.main:app --port 8000`（pid 605260）
+- **Tunnel 进程**：`HTTPS_PROXY=http://127.0.0.1:7897 cloudflared.exe tunnel --url http://localhost:8000 --protocol http2`
+- **限制**：本机/代理/tunnel 进程任一停掉 URL 即失效。quick tunnel URL 随 cloudflared 重启会变。
+
+### 备选部署目标（不需要本机常开）
+
+- **Hugging Face Spaces**：`<https://huggingface.co/spaces/zyl12/group-chat-digest>`（代码已 push，HF free tier CPU 配额受限，需清理旧 Space）
+- **Render**：`render.yaml` 已就绪（free tier 可能需绑卡）
+- **Fly.io**：`fly.toml` 已就绪（需装 flyctl + 绑卡）
+
+### 验证
+
+```bash
+# 通过代理访问（直连国内 schannel SSL 会失败，需走代理）
+HTTPS_PROXY=http://127.0.0.1:7897 curl --ssl-no-revoke https://slide-faces-kissing-cheap.trycloudflare.com/healthz
+# {"status":"ok"}
+
+# E2E: 上传 → 摘要 → digest
+HTTPS_PROXY=http://127.0.0.1:7897 curl --ssl-no-revoke -X POST \
+  https://slide-faces-kissing-cheap.trycloudflare.com/api/uploads \
+  -F "file=@tests/fixtures/wechat_sample.json;type=application/json" \
+  -F "fmt=wechat"
+# {"upload_id":"...","status":"done"}
+```
+
+**WebUI 浏览器访问**：直接打开 <https://slide-faces-kissing-cheap.trycloudflare.com>（浏览器走系统代理，国内可达）。
 
 ## CI
 
@@ -253,7 +278,7 @@ GitHub Actions 工作流 `.github/workflows/ci.yml`：
 - [x] REFLECTION.md
 - [x] CI 配置（unit-test + docker-build + 备选 deploy）
 - [x] 线上部署配置（`Dockerfile` 适配 HF Spaces，`render.yaml` + `fly.toml` 备选）
-- [ ] 实际部署上线（需用户在 HF Spaces 创建 Space + `git push hf main`）
+- [x] **实际部署上线**：Cloudflare Tunnel URL <https://slide-faces-kissing-cheap.trycloudflare.com>
 
 ## 工作流
 

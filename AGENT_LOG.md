@@ -1891,4 +1891,46 @@
 
 ---
 
+## 补丁 P3: 上线 + 修复 LLM provider 未注册 bug
+
+**日期**: 2026-08-14
+
+**触发的 Superpowers 技能**: superpowers:systematic-debugging（500 错误根因追溯）/ superpowers:verification-before-completion（端到端验证暴露生产 bug）
+
+**背景**: HF Spaces 因 CPU 配额超无法启动；Cloudflare quick tunnel 直连被 SNI 阻断。最后通过让 cloudflared 走系统代理（127.0.0.1:7897）+ `--protocol http2` 绕过 SNI 阻断，建立 quick tunnel。但 E2E 测试时发现 `POST /api/uploads/{id}/process` 返回 500——`ValueError: unknown LLM provider: mock`。
+
+**根因**:
+- `app/main.py` 从未 import 任何 LLM adapter 模块
+- `@register_provider("mock")` / `@register_provider("deepseek")` / `@register_provider("openai")` 装饰器从未执行
+- `_LLM_PROVIDERS` 注册表在生产环境保持空 dict
+- 测试通过是因为 T22 用 `monkeypatch.setattr("app.routers.uploads.get_provider", lambda name, **kw: mock_llm)` 绕过了工厂调用，直接注入 fixture
+- 这是典型的"测试 fixture 掩盖生产 bug"——monkeypatch 是 seam，绕过了真实工厂路径
+
+**改动**:
+- `app/main.py` 加一行 `from app.adapters import llm as _llm_adapters  # noqa: F401`，触发 `app/adapters/llm/__init__.py` 里 `from .mock import MockLLMAdapter` 等导入，进而触发 `@register_provider` 装饰器执行，注册表填充
+- 132 tests 全过（修复不破坏任何现有测试）
+- 端到端验证：经公网 URL `https://slide-faces-kissing-cheap.trycloudflare.com` 上传 wechat_sample.json → process → digest 全链路通过
+
+**人工干预**: 编排器主 session 直接修——单行 import bug，不需要 subagent。但根因追溯需要：
+1. 看本地 uvicorn 日志找 traceback
+2. 定位 `app/routers/uploads.py:162 process_upload` → `get_provider(llm_name)` → `ValueError`
+3. 反查 `get_provider` 工厂 → `_LLM_PROVIDERS` 为空
+4. 反查 `register_provider` 装饰器 → 没在任何模块顶层执行
+5. 反查 `app/main.py` 导入 → 缺 adapter 包导入
+
+**学到的教训**:
+1. **monkeypatch 测试 seam 会掩盖生产 bug**：T22 用 monkeypatch 替换 `get_provider`，让测试在 fixture mock 下通过——但生产环境没有这个替换，真实工厂被调用，注册表空导致 500。教训：测试要测真实路径，monkeypatch 仅作 last resort；任何 monkeypatch 都要在 PR 描述显式声明"本测试绕过了 X 路径，需另测生产路径"。
+2. **装饰器注册模式必须确保模块被 import**：Python `@register_provider` 是 import-time side effect——模块不被 import 装饰器就不执行。`app/adapters/llm/__init__.py` 已正确 re-export 三个 adapter，但 `app/main.py` 没 import 这个包——典型"包级注册表"陷阱。教训：用 entry_points（setuptools `register_provider = app.adapters.llm:register`）或显式 import；装饰器注册必须有文档化的"激活点"。
+3. **冷启动验证暴露不了生产路径 bug**：T25 冷启动 agent 实现 `GET /api/digests` 时只测了读路径（list 查询），没测 process 写路径。Process 端点的 LLM 工厂调用是真实生产路径，被 monkeypatch 测试掩盖。教训：冷启动验证应专门测"生产路径"（不经 fixture/monkeypatch 的端点），不只是"读路径"。
+4. **公网 URL 端到端验证是最强测试**：本地 pytest 132 全过掩盖了 bug；经公网 URL 的 E2E curl 暴露了 bug。教训：部署后必须做一次"绕过测试 fixture"的真实 HTTP 请求验证；测试通过 ≠ 生产可用。
+5. **Cloudflare Tunnel 走代理绕过 SNI 阻断**：直连 trycloudflare.com SSL 握手被 GFW SNI 阻断；让 cloudflared 走 `HTTPS_PROXY=http://127.0.0.1:7897` + `--protocol http2` 后建立成功。教训：国内访问 cloudflare/trycloudflare 类服务必须走代理，且 Go 程序（cloudflared）读 HTTPS_PROXY 环境变量自动配置。
+
+**P3 commit 链**:
+- `6aa6ad7` fix(llm): import adapters in main.py so @register_provider runs
+- `docs(deploy): update README with live Cloudflare Tunnel URL + status`
+
+**上线 URL**: <https://slide-faces-kissing-cheap.trycloudflare.com>（quick tunnel，本机 uvicorn + cloudflared 经代理常开）
+
+---
+
 
