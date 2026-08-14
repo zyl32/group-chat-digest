@@ -1986,3 +1986,26 @@
 - `fix(frontend): decouple Todoist export from external navigation`（todos.html click handler 重写）
 
 ---
+
+## 补丁 P6：发布 v1.0.1 tag 并切换 submission 指向
+
+**时间**: 2026-08-14
+**触发**: P5 修复 commit `618fcc5`（导出 Todoist 断开外链）发布后，submission.jsonc 仍指向 v1.0.0（早于 P5 修复，含「页面不存在」bug）。若评审严格按 tag 拉源码，会拿到带 bug 的版本。选择新建 v1.0.1 tag 而非移动 v1.0.0（避免 force-update 已发布 tag 的破坏性操作）。
+
+**变更**:
+- 创建 annotated tag `v1.0.1` 指向 `618fcc5`，tag message 注明相对 v1.0.0 的差异（P5 前端修复 + 后端契约不变 + 启动方式）
+- push `v1.0.1` 到 origin（GitHub 渲染为 `/releases/tag/v1.0.1`）
+- `submission.jsonc`：`deploy_release_url` 从 v1.0.0 改为 v1.0.1
+  - `id`/`name`/`repo_url`/`is_deployed` 保持 v1.0.0 时的填法（学号 241250011, 朱雨乐, zyl32/group-chat-digest, false）
+
+**学到的教训**:
+1. **已发布 tag 不应 force-update**：tag 是公共契约——一旦 push 到 GitHub 任何引用了它的链接（submission URL / PR / 文档 / 别人的 fork）都依赖 tag 指向固定 commit。force-move 会让所有引用瞬间指向不同 commit，破坏供应链信任。新建 patch tag (`v1.0.<n>`) 是 SemVer 标准做法，无破坏性。
+2. **release snapshot 必须晚于所有修复 commit**：submission 指向的 tag 必须包含所有已知的 bug 修复——否则评审按 tag 拉源码会复现已修复的 bug。教训：每次发完修复 commit 后立即检查 submission 指向的 tag 是否还覆盖该修复；不覆盖就发 patch tag。
+3. **tag message 要写「相对上一版的差异」**：v1.0.1 tag message 没重复 v1.0.0 的全部功能（避免冗长），只列「相对 v1.0.0 的修复」+ 后端契约不变声明 + 启动方式（启动方式每个 tag 都重复一次方便评审 cold-start）。教训：patch tag message 应是「增量 + 必备 cold-start 信息」。
+
+**P6 commit 链**:
+- 仅 tag + submission.jsonc 本地修改（submission.jsonc 在 .gitignore 中不入 git，tag 是 ref 不需要 commit）
+
+**提交入口（最新）**: <https://github.com/zyl32/group-chat-digest/releases/tag/v1.0.1>
+
+---
