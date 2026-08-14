@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.routers import credentials, digests, exports, health, todos, uploads
+from app.adapters import llm as _llm_adapters  # noqa: F401 — registers LLM providers via @register_provider decorator
 
 app = FastAPI(title="Group Chat Digest")
 app.include_router(uploads.router)
