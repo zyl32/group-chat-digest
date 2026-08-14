@@ -151,17 +151,17 @@
           });
           if (!r.ok) { var t = await r.text(); exportStatus.textContent = '导出失败: ' + r.status + ' ' + t; exportStatus.className = 'status err'; return; }
           var j = await r.json();
-          if (j.url) {
+          var text = j.url ? decodeURIComponent(j.url.split('text=')[1] || '') : '';
+          if (text) {
             exportStatus.replaceChildren(
-              document.createTextNode('Todoist URL: '),
-              Object.assign(document.createElement('a'), {
-                href: j.url, target: '_blank', rel: 'noopener', textContent: '打开'
+              document.createTextNode('已生成 ' + ids.length + ' 条待办文本（可复制）:'),
+              Object.assign(document.createElement('textarea'), {
+                value: text, rows: 3, style: 'display:block;width:100%;margin-top:0.5rem;'
               })
             );
             exportStatus.className = 'status ok';
-            window.open(j.url, '_blank', 'noopener');
           } else {
-            exportStatus.textContent = '未返回 URL';
+            exportStatus.textContent = '未返回文本';
             exportStatus.className = 'status err';
           }
         } catch (err) {

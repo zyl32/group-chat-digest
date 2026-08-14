@@ -1964,3 +1964,25 @@
 **提交入口**: <https://github.com/zyl32/group-chat-digest/releases/tag/v1.0.0>
 
 ---
+
+## 补丁 P5：Todoist 导出断开外链（前端 UX 修复）
+
+**时间**: 2026-08-14
+**触发**: 用户反馈点「导出 Todoist」时新 tab 显示「页面不存在」。根因：`window.open(j.url)` 在 `await fetch()` 之后调用，用户手势已失效 → 浏览器 popup blocker 拦截或弹到空 tab；即便没被拦，新 tab 跳到 `todoist.com/import?text=...`，未登录 Todoist 或国内不可达都会显示「页面不存在」。
+
+**变更**:
+- `app/frontend/todos.html` 的「导出 Todoist」click handler:
+  - 删除 `window.open(j.url, '_blank', 'noopener')`（不再自动跳外链）
+  - 删除内联 `<a href target=_blank>打开</a>`（不再生成可点外链）
+  - 改为：从后端返回的 `j.url` 的 `text=` query param 中 `decodeURIComponent` 出拼接好的待办纯文本，在状态区渲染一个 `<textarea>`（rows=3，全宽）让用户**直接复制文本**粘到任意工具（Todoist 手动添加 / Notion / 微信）
+- 后端 `app/services/export.py:build_todoist_url` + `app/routers/exports.py` **不动**：仍返 `{url: "https://todoist.com/import?text=..."}`，URL 格式不变（spec §3.5 描述的 service 行为一致）。前端从 URL 中解出 text 段展示，service 契约不变。
+
+**学到的教训**:
+1. **`window.open` 必须在同步 user-gesture 内调用**：`async function` + `await fetch()` 之后调用 `window.open` 时，浏览器认为不是用户主动触发 → popup blocker 拦截。修法：要么在 click 时同步先开 placeholder tab 再 `await` 后赋值 location，要么干脆不自动开（让用户点内联 `<a>`）。本项目的彻底修法是后者+更彻底——直接不连外链。
+2. **「不连外链」是合理的产品降级**：从「自动跳 Todoist URL」降级到「展示可复制纯文本」——用户反而获得了灵活性（粘到任何工具，不绑死 Todoist）。代价是用户多一步手动粘贴，但对单用户演示场景可接受。后端 service 层不动 = spec 契约不破坏 = 不算 breaking change。
+3. **前端纯 JS 改动也要在 AGENT_LOG 留痕**：虽然没动 service 契约，但 UX 行为变了（从「自动跳外链」到「展示纯文本」），reviewer 看 diff 时能在 AGENT_LOG 找到 why。
+
+**P5 commit 链**:
+- `fix(frontend): decouple Todoist export from external navigation`（todos.html click handler 重写）
+
+---
