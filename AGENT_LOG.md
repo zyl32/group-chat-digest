@@ -2009,3 +2009,43 @@
 **提交入口（最新）**: <https://github.com/zyl32/group-chat-digest/releases/tag/v1.0.1>
 
 ---
+
+## 补丁 P7：前端摘要流程 + 待办状态机按钮 修复
+
+**时间**: 2026-08-14
+**触发**: 用户报告（1）摘要部分不知怎么操作；（2）待办忽略/推迟/重新激活点击全 409。
+
+**根因**:
+1. **`index.html`** 上传表单只调 `POST /api/uploads`，不自动调 `POST /api/uploads/{id}/process`——upload 只持久化 messages，不跑 LLM，摘要不会生成。用户必须手动 curl process 端点。
+2. **`digests.html`** 显示「v1 后端（T15）未提供 `GET /api/digests` 端点」占位文字，但 T15 后端点已存在（实测 DB 有 4 条摘要）。页面没 fetch 没渲染列表。
+3. **`digest_detail.html`** 同样是「Coming soon」占位，没渲染 `summary_blocks`。
+4. **`todos.html`** 对所有 todo 渲染 4 个固定 action 按钮（完成/忽略/推迟/重新激活），无视当前 state。状态机 `_TRANSITIONS` 只允许：
+   - pending → done / ignored / snoozed
+   - snoozed → reactivate → pending
+   - done / ignored：终态，无任何出度
+
+   用户点完成（pending→done）后再点忽略/推迟/重新激活 → 全 409（done 无出度）。或点忽略（pending→ignored）后任意其他按钮 → 全 409。重新激活从 pending → 409（仅 snoozed→reactivate 合法）。
+
+**变更**:
+- `app/frontend/todos.html`：
+  - 引入 `ACTIONS_BY_STATE` map（pending→[done/ignored/snoozed], snoozed→[reactivate], done/ignored→[]），render 函数按 todo.state 动态生成可用按钮，不再硬编码 4 个
+  - 终态（done/ignored）显示「（终态，无可用动作）」占位文字而非空 div
+  - 后端 `app/services/todo_state.py` **不动**：状态机契约保持严格，不在前端放宽
+- `app/frontend/index.html`：上传成功后**自动调** `POST /api/uploads/{id}/process`，状态区显示 `digest_id=X, todo_count=M` + 「查看摘要」「查看待办」两个内联链接。body 字段为空 JSON（process 端点默认 llm_name=mock）
+- `app/frontend/digests.html`：fetch `/api/digests`，渲染表格（id/日期/窗口/模型/块数/upload_id 短码/查看链接）。空列表显示「暂无摘要，先上传...」
+- `app/frontend/digest_detail.html`：从 URL `?upload_id=...` 取参，fetch `/api/uploads/{id}/digest`，渲染 meta + summary_blocks 列表（每块 topic+msg_range+summary 卡片）。404 时显示「该 upload_id 无摘要」
+
+**实测**:
+- E2E：POST /api/uploads → POST /api/uploads/{id}/process → GET /api/uploads/{id}/digest 全链通（digest_id=5, todo_count=2, blocks=[1], model=mock）
+- 4 页 HTML grep 新代码均命中（todos.html 有 ACTIONS_BY_STATE，index.html 有 process 调用，digests.html 有 digest-table，digest_detail.html 有 summary_blocks 渲染）
+
+**学到的教训**:
+1. **前端「占位 Coming soon」文字极易过时**：digests.html / digest_detail.html 在 T15 前写的占位，T15 后端点已实现但前端没同步——用户看到「未提供端点」会以为功能没做。教训：前端占位文字必须有「跟进 task」标记，or 任何占位都要在 service 真实可用后立即改回真实 fetch。
+2. **状态机 UI 必须按当前 state 动态渲染按钮**：硬编码「4 个按钮」无视 state——一旦 todo 进入终态，所有按钮变 409 噪声。教训：状态机驱动的 UI 按 state 渲染合法 action 子集（ACTIONS_BY_STATE map）；任何 409 都是前端 UX 缺陷，不是后端契约问题。
+3. **上传成功 ≠ 摘要生成**：upload endpoint 只持久化 messages（status=done 仅指上传成功），process endpoint 才跑 LLM。教训：任何「上传即完成」的语义都要在前端文案里诚实区分（上传→解析→触发摘要→生成 是三个不同阶段），否则用户误以为上传完就有摘要。
+4. **不要为 UX 缺陷放宽后端契约**：原方案考虑过给状态机加 `ignored→reactivate` 等出度让按钮不再 409——这是错的方向。状态机严格是 spec §3.4 的设计意图（防止误撤销已忽略/已完成的待办）。正确做法是前端只显示合法 action，让用户感知到「这个 todo 已经是终态了」。
+
+**P7 commit 链**:
+- `fix(frontend): wire upload→process, render digests list/detail, gate todo actions by state`
+
+---

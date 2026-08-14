@@ -36,7 +36,7 @@
     </section>
     <section>
       <h2>下一步</h2>
-      <p>上传成功后，请前往 <a href="/todos.html">待办列表</a> 查看提取的待办事项，或导出 ICS / Todoist。</p>
+      <p>上传后系统会自动跑 LLM 生成摘要与待办。前往 <a href="/todos.html">待办列表</a> 查看与导出，或去 <a href="/digests.html">摘要列表</a> 查看摘要。</p>
       <p>首次使用需先 <a href="/setup.html">配置 LLM API Key</a>。</p>
     </section>
   </main>
@@ -58,8 +58,35 @@
             return;
           }
           var j = JSON.parse(text);
-          status.textContent = '上传成功，ID: ' + j.upload_id + '，状态: ' + j.status
-            + '。前往 待办 查看结果。';
+          status.textContent = '上传成功 (upload_id=' + j.upload_id + '), 正在触发摘要...';
+          status.className = 'status';
+          // Auto-trigger process: upload alone does not generate a digest;
+          // POST /api/uploads/{id}/process runs the LLM + extracts todos.
+          var pr = await fetch('/api/uploads/' + encodeURIComponent(j.upload_id) + '/process', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+          var pt = await pr.text();
+          if (!pr.ok) {
+            status.textContent = '摘要触发失败: ' + pr.status + ' ' + pt;
+            status.className = 'status err';
+            return;
+          }
+          var pj = JSON.parse(pt);
+          status.replaceChildren(
+            document.createTextNode('摘要生成完成: digest_id=' + pj.digest_id
+              + ', todo_count=' + pj.todo_count + ' '),
+            Object.assign(document.createElement('a'), {
+              href: '/digest_detail.html?upload_id=' + encodeURIComponent(j.upload_id),
+              textContent: '查看摘要'
+            }),
+            document.createTextNode(' | '),
+            Object.assign(document.createElement('a'), {
+              href: '/todos.html',
+              textContent: '查看待办'
+            })
+          );
           status.className = 'status ok';
         } catch (err) {
           status.textContent = '网络错误: ' + err.message;

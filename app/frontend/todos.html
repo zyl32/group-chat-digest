@@ -45,6 +45,14 @@
         loadingEl.style.display = todos.length ? 'none' : 'block';
         loadingEl.textContent = todos.length ? '' : '暂无待办';
         listEl.innerHTML = '';
+        // Valid actions per current state (mirrors app/services/todo_state.py
+        // _TRANSITIONS). Terminal states (done/ignored) show no action buttons.
+        var ACTIONS_BY_STATE = {
+          pending:   [['done', '完成'], ['ignored', '忽略'], ['snoozed', '推迟']],
+          snoozed:   [['reactivate', '重新激活']],
+          done:      [],
+          ignored:   [],
+        };
         todos.forEach(function (t) {
           var li = document.createElement('li');
           var left = document.createElement('div');
@@ -62,7 +70,7 @@
 
           var actions = document.createElement('div');
           actions.className = 'actions';
-          [['done', '完成'], ['ignored', '忽略'], ['snoozed', '推迟'], ['reactivate', '重新激活']].forEach(function (pair) {
+          (ACTIONS_BY_STATE[t.state] || []).forEach(function (pair) {
             var b = document.createElement('button');
             b.textContent = pair[1];
             b.type = 'button';
@@ -70,6 +78,12 @@
             b.addEventListener('click', function () { doAction(t.id, pair[0]); });
             actions.appendChild(b);
           });
+          if (actions.childNodes.length === 0) {
+            var hint = document.createElement('span');
+            hint.className = 'muted';
+            hint.textContent = '（终态，无可用动作）';
+            actions.appendChild(hint);
+          }
 
           li.appendChild(left);
           li.appendChild(actions);

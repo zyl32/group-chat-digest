@@ -18,17 +18,66 @@
   </header>
   <main>
     <section>
-      <h2>Coming soon</h2>
-      <p class="muted">
-        v1 后端（T15）未提供 <code>GET /api/digests/{upload_id}</code> 详情端点，
-        摘要块在上传流程内同步生成。
-        提取的待办已写入 <code>todos</code> 表，可在待办页查看与导出。
-      </p>
-      <p>
-        <a href="/todos.html">前往待办列表</a> |
-        <a href="/">返回上传</a>
-      </p>
+      <p id="loading" class="muted">加载中...</p>
+      <div id="digest-body"></div>
     </section>
   </main>
+  <script>
+    (function () {
+      var loadingEl = document.getElementById('loading');
+      var bodyEl = document.getElementById('digest-body');
+      var params = new URLSearchParams(location.search);
+      var uploadId = params.get('upload_id');
+      if (!uploadId) {
+        loadingEl.textContent = '缺少 upload_id 参数。请从摘要列表或上传成功页进入。';
+        return;
+      }
+      fetch('/api/uploads/' + encodeURIComponent(uploadId) + '/digest').then(function (r) {
+        if (r.status === 404) { loadingEl.textContent = '该 upload_id 无摘要（未触发 process 或上传不存在）。'; return null; }
+        if (!r.ok) { loadingEl.textContent = '加载失败: ' + r.status; return null; }
+        return r.json();
+      }).then(function (d) {
+        if (!d) return;
+        loadingEl.style.display = 'none';
+        var meta = document.createElement('p');
+        meta.className = 'muted';
+        meta.textContent = 'digest_id=' + d.id + ' | 日期=' + d.date + ' | 窗口=' + d.window + ' | 模型=' + d.model_used;
+        bodyEl.appendChild(meta);
+        var blocks = d.summary_blocks || [];
+        if (!blocks.length) {
+          var empty = document.createElement('p');
+          empty.className = 'muted';
+          empty.textContent = '该摘要无 summary_blocks。';
+          bodyEl.appendChild(empty);
+          return;
+        }
+        blocks.forEach(function (b, i) {
+          var card = document.createElement('div');
+          card.style.border = '1px solid #ddd';
+          card.style.padding = '0.75rem';
+          card.style.marginBottom = '0.75rem';
+          card.style.borderRadius = '4px';
+          var title = document.createElement('h3');
+          title.style.margin = '0 0 0.4rem 0';
+          title.textContent = (i + 1) + '. ' + (b.topic || '(无主题)');
+          card.appendChild(title);
+          if (b.msg_range && Array.isArray(b.msg_range)) {
+            var range = document.createElement('p');
+            range.className = 'muted';
+            range.style.fontSize = '0.85em';
+            range.textContent = '消息范围: [' + b.msg_range[0] + ', ' + b.msg_range[1] + ')';
+            card.appendChild(range);
+          }
+          var sum = document.createElement('p');
+          sum.style.margin = '0.4rem 0 0 0';
+          sum.textContent = b.summary || '(无摘要内容)';
+          card.appendChild(sum);
+          bodyEl.appendChild(card);
+        });
+      }).catch(function (err) {
+        loadingEl.textContent = '网络错误: ' + err.message;
+      });
+    })();
+  </script>
 </body>
 </html>

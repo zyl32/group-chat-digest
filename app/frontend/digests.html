@@ -17,21 +17,63 @@
   </header>
   <main>
     <section>
-      <h2>暂无摘要列表端点</h2>
-      <p class="muted">
-        v1 后端（T15）目前未提供 <code>GET /api/digests</code> 列表端点，
-        摘要在上传流程内同步生成并落入待办。
-        请通过上传后的链接或待办列表查看提取结果。
-      </p>
-      <p>
-        <a href="/">返回上传</a> |
-        <a href="/todos.html">查看待办</a>
-      </p>
-      <p class="muted">
-        如已上传，可手动访问
-        <code>/digest_detail.html?upload_id=...</code> 查看摘要详情页（v1 仅显示提示）。
-      </p>
+      <p id="loading" class="muted">加载中...</p>
+      <table id="digest-table" style="display:none; width:100%; border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th style="text-align:left; padding:0.4rem;">ID</th>
+            <th style="text-align:left; padding:0.4rem;">日期</th>
+            <th style="text-align:left; padding:0.4rem;">窗口</th>
+            <th style="text-align:left; padding:0.4rem;">模型</th>
+            <th style="text-align:left; padding:0.4rem;">块数</th>
+            <th style="text-align:left; padding:0.4rem;">upload_id</th>
+            <th style="text-align:left; padding:0.4rem;">操作</th>
+          </tr>
+        </thead>
+        <tbody id="digest-rows"></tbody>
+      </table>
     </section>
   </main>
+  <script>
+    (function () {
+      var loadingEl = document.getElementById('loading');
+      var tableEl = document.getElementById('digest-table');
+      var rowsEl = document.getElementById('digest-rows');
+      function shortId(s) { return s ? s.slice(0, 8) + '…' : ''; }
+      fetch('/api/digests').then(function (r) {
+        if (!r.ok) { loadingEl.textContent = '加载失败: ' + r.status; return; }
+        return r.json();
+      }).then(function (rows) {
+        if (!rows) return;
+        if (!rows.length) { loadingEl.textContent = '暂无摘要，先上传群聊导出再触发处理。'; return; }
+        loadingEl.style.display = 'none';
+        tableEl.style.display = 'table';
+        rows.forEach(function (d) {
+          var tr = document.createElement('tr');
+          [
+            d.id, d.date, d.window, d.model_used,
+            (d.summary_blocks || []).length, shortId(d.upload_id)
+          ].forEach(function (cell) {
+            var td = document.createElement('td');
+            td.style.padding = '0.4rem';
+            td.style.borderTop = '1px solid #eee';
+            td.textContent = cell;
+            tr.appendChild(td);
+          });
+          var td = document.createElement('td');
+          td.style.padding = '0.4rem';
+          td.style.borderTop = '1px solid #eee';
+          var a = document.createElement('a');
+          a.href = '/digest_detail.html?upload_id=' + encodeURIComponent(d.upload_id);
+          a.textContent = '查看';
+          td.appendChild(a);
+          tr.appendChild(td);
+          rowsEl.appendChild(tr);
+        });
+      }).catch(function (err) {
+        loadingEl.textContent = '网络错误: ' + err.message;
+      });
+    })();
+  </script>
 </body>
 </html>
